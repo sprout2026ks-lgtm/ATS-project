@@ -1,0 +1,256 @@
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap");
+
+:root {
+  font-family: "DM Sans", sans-serif;
+  color: #17233c;
+  background: #f5f7fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  font-smooth: always;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+  font-weight: 400;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background:
+    radial-gradient(ellipse at 10% 12%, rgba(116, 154, 255, 0.1), transparent 34%),
+    radial-gradient(ellipse at 94% 88%, rgba(81, 194, 169, 0.1), transparent 33%),
+    #f5f7fb;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.page-shell {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 20px 24px;
+}
+
+.auth-card {
+  width: min(100%, 430px);
+  padding: 38px 42px 32px;
+  border: 1px solid #e8ebf2;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 22px 65px rgba(34, 52, 91, 0.09);
+}
+
+.brand-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 13px;
+  background: #315ee8;
+  color: #fff;
+  font-family: "Manrope", sans-serif;
+  font-size: 23px;
+  font-weight: 800;
+}
+
+.eyebrow {
+  margin: 25px 0 8px;
+  color: #5571b6;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+h1 {
+  margin: 0;
+  font-family: "Manrope", sans-serif;
+  font-size: clamp(26px, 6vw, 31px);
+  font-weight: 700;
+  letter-spacing: -0.045em;
+  line-height: 1.2;
+}
+
+.subtitle {
+  margin: 10px 0 26px;
+  color: #79849b;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.auth-form label {
+  margin-top: 5px;
+  color: #34415b;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.auth-form input {
+  width: 100%;
+  min-height: 47px;
+  padding: 0 13px;
+  border: 1px solid #dfe4ed;
+  border-radius: 9px;
+  outline: none;
+  background: #fff;
+  color: #17233c;
+  font-size: 14px;
+  transition: border-color 140ms, box-shadow 140ms;
+}
+
+.auth-form input::placeholder {
+  color: #a4adbd;
+}
+
+.auth-form input:focus {
+  border-color: #5276e9;
+  box-shadow: 0 0 0 3px rgba(49, 94, 232, 0.12);
+}
+
+.primary-button {
+  min-height: 47px;
+  margin-top: 10px;
+  border: 0;
+  border-radius: 9px;
+  background: #315ee8;
+  color: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  transition: background 140ms, transform 140ms;
+}
+
+.primary-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: #234ed2;
+}
+
+.primary-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.message {
+  margin: 4px 0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.error-message {
+  background: #fff0ef;
+  color: #a4342b;
+}
+
+.success-message {
+  background: #edfaf3;
+  color: #1d7147;
+}
+
+.setup-message {
+  margin: -8px 0 20px;
+  background: #fff7e6;
+  color: #77530b;
+}
+
+.setup-message code {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.helper-text {
+  margin: 0;
+  color: #79849b;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.form-links {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 1px;
+}
+
+.text-button {
+  padding: 5px 0;
+  border: 0;
+  background: transparent;
+  color: #315ee8;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.text-button:hover {
+  color: #234ed2;
+  text-decoration: underline;
+}
+
+.text-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.switch-mode {
+  margin: 23px 0 0;
+  border-top: 1px solid #edf0f5;
+  padding-top: 20px;
+  color: #79849b;
+  font-size: 13px;
+  text-align: center;
+}
+
+.inline-button {
+  display: inline;
+  padding: 0;
+  font-size: inherit;
+}
+
+.signed-in-panel {
+  color: #56627a;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.signed-in-panel strong {
+  color: #17233c;
+}
+
+.signed-in-panel .primary-button {
+  width: 100%;
+}
+
+footer {
+  margin-top: 20px;
+  color: #929bad;
+  font-size: 12px;
+}
+
+@media (max-width: 480px) {
+  .page-shell {
+    justify-content: flex-start;
+    padding: 26px 15px 20px;
+  }
+
+  .auth-card {
+    padding: 30px 24px 25px;
+  }
+}
