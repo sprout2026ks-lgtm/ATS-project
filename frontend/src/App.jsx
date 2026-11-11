@@ -12,6 +12,7 @@ import {
 } from "firebase/auth";
 import { auth, firebaseConfigured } from "./firebase.js";
 import { saveProfile } from "./api.js";
+import Dashboard from "./Dashboard.jsx";
 
 const authErrorMessages = {
   "auth/email-already-in-use": "An account already exists for this email.",
@@ -246,6 +247,10 @@ function App() {
   }
 
   const phoneSetup = mode === "phone-setup" && pendingRegistration && authUser;
+
+  if (authUser && !phoneSetup) {
+    return <Dashboard authUser={authUser} onSignOut={handleSignOut} />;
+  }
 
   return (
     <main className="page-shell">
