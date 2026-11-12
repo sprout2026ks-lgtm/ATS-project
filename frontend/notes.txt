@@ -1,0 +1,1 @@
+ (Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned) ; (& d:\ATS-project\backend\.venv\Scripts\Activate.ps1)
