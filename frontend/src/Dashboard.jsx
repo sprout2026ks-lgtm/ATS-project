@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   apiJson,
   downloadReport,
+  downloadLibraryResume,
   downloadResume,
+  uploadLibraryResumes,
   uploadResumes,
 } from "./api.js";
 
@@ -10,6 +12,7 @@ const navigation = [
   ["overview", "Overview"],
   ["clients", "Clients"],
   ["jobs", "Job requirements"],
+  ["resume-library", "Resume library"],
   ["candidates", "Candidates"],
   ["shortlist", "Shortlist"],
   ["reports", "Reports"],
@@ -20,6 +23,22 @@ function splitSkills(value) {
   return value.split(",").map((skill) => skill.trim()).filter(Boolean);
 }
 
+async function uploadInBatches(files, uploadBatch, onProgress) {
+  let uploadedCount = 0;
+  const failed = [];
+  const batchSize = 8;
+
+  for (let start = 0; start < files.length; start += batchSize) {
+    const batch = files.slice(start, start + batchSize);
+    onProgress(`Uploading ${Math.min(start + batch.length, files.length)} of ${files.length} resumes…`);
+    const result = await uploadBatch(batch);
+    uploadedCount += result.uploaded.length;
+    failed.push(...result.failed);
+  }
+
+  return { uploadedCount, failed };
+}
+
 function Dashboard({ authUser, onSignOut }) {
   const [activePage, setActivePage] = useState("overview");
   const [clients, setClients] = useState([]);
@@ -27,6 +46,7 @@ function Dashboard({ authUser, onSignOut }) {
   const [jobs, setJobs] = useState([]);
   const [selectedJobId, setSelectedJobId] = useState("");
   const [candidates, setCandidates] = useState([]);
+  const [resumes, setResumes] = useState([]);
   const [aiStatus, setAiStatus] = useState(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
@@ -36,6 +56,7 @@ function Dashboard({ authUser, onSignOut }) {
   const [busy, setBusy] = useState(false);
   const [uploadProgress, setUploadProgress] = useState("");
   const [analyzingId, setAnalyzingId] = useState("");
+  const [matchingResumeId, setMatchingResumeId] = useState("");
   const [clientForm, setClientForm] = useState({
     organizationName: "",
     contactPerson: "",
@@ -62,29 +83,55 @@ function Dashboard({ authUser, onSignOut }) {
       ? source
       : source.filter((candidate) => candidate.status === statusFilter);
   }, [activePage, candidates, statusFilter]);
+  const displayedResumes = useMemo(
+    () => resumes.filter((resume) => (
+      (activePage !== "shortlist" || resume.status === "Shortlisted")
+      && (statusFilter === "All" || (resume.status || "New") === statusFilter)
+    )),
+    [activePage, resumes, statusFilter],
+  );
   const shortlistedCount = candidates.filter(
     (candidate) => candidate.status === "Shortlisted",
+  ).length;
+  const resumeRecommendedCount = resumes.filter((resume) => resume.recommended).length;
+  const resumeShortlistedCount = resumes.filter(
+    (resume) => resume.status === "Shortlisted",
   ).length;
   const recommendedCount = candidates.filter((candidate) => candidate.recommended).length;
 
   const refreshWorkspace = useCallback(async () => {
+    const resumeQuery = new URLSearchParams({
+      include_pii: String(includePii),
+    });
+    if (search.trim()) resumeQuery.set("search", search.trim());
+    if (clientId && selectedJobId) {
+      resumeQuery.set("client_id", clientId);
+      resumeQuery.set("job_id", selectedJobId);
+    }
+    const resumeRequest = apiJson(
+      authUser,
+      `/api/resumes?${resumeQuery.toString()}`,
+    );
     if (!clientId) {
       setJobs([]);
       setCandidates([]);
+      setResumes((await resumeRequest).resumes);
       return;
     }
     const query = new URLSearchParams({ include_pii: String(includePii) });
     if (search.trim()) query.set("search", search.trim());
-    const [jobResult, candidateResult] = await Promise.all([
+    const [jobResult, candidateResult, resumeResult] = await Promise.all([
       apiJson(authUser, `/api/clients/${encodeURIComponent(clientId)}/jobs`),
       apiJson(
         authUser,
         `/api/clients/${encodeURIComponent(clientId)}/applicants?${query.toString()}`,
       ),
+      resumeRequest,
     ]);
     setJobs(jobResult.jobs);
     setCandidates(candidateResult.applicants);
-  }, [authUser, clientId, includePii, search]);
+    setResumes(resumeResult.resumes);
+  }, [authUser, clientId, includePii, search, selectedJobId]);
 
   useEffect(() => {
     let active = true;
@@ -143,6 +190,7 @@ function Dashboard({ authUser, onSignOut }) {
       });
       setClients((current) => [...current, result.client]);
       setClientId(result.client.id);
+      setSelectedJobId("");
       setClientForm({
         organizationName: "",
         contactPerson: "",
@@ -165,7 +213,10 @@ function Dashboard({ authUser, onSignOut }) {
       });
       const remaining = clients.filter((item) => item.id !== client.id);
       setClients(remaining);
-      if (clientId === client.id) setClientId(remaining[0]?.id || "");
+      if (clientId === client.id) {
+        setClientId(remaining[0]?.id || "");
+        setSelectedJobId("");
+      }
     }, "Client archived.");
   }
 
@@ -206,35 +257,66 @@ function Dashboard({ authUser, onSignOut }) {
     }, "Job status updated.");
   }
 
-  async function uploadFiles(event) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const files = Array.from(form.elements.resumes.files);
-    if (!files.length || !clientId) return;
+  async function uploadSelectedFiles(files, form, uploadBatch) {
     setError("");
     setNotice("");
     setBusy(true);
     let uploadedCount = 0;
-    let failedCount = 0;
     try {
-      const batchSize = 8;
-      for (let start = 0; start < files.length; start += batchSize) {
-        const batch = files.slice(start, start + batchSize);
-        setUploadProgress(`Uploading ${Math.min(start + batch.length, files.length)} of ${files.length} resumes…`);
-        const result = await uploadResumes(authUser, clientId, batch);
-        uploadedCount += result.uploaded.length;
-        failedCount += result.failed.length;
-      }
+      const result = await uploadInBatches(
+        files,
+        uploadBatch,
+        setUploadProgress,
+      );
+      uploadedCount = result.uploadedCount;
       await refreshWorkspace();
-      setNotice(`${uploadedCount} resume${uploadedCount === 1 ? "" : "s"} uploaded${failedCount ? `; ${failedCount} failed` : ""}.`);
+      const successMessage = `${uploadedCount} resume${uploadedCount === 1 ? "" : "s"} uploaded.`;
+      if (result.failed.length) {
+        const failures = result.failed
+          .map((item) => `${item.resumeFileName}: ${item.error}`)
+          .join("; ");
+        setError(`${successMessage} Upload failures: ${failures}`);
+      } else {
+        setNotice(successMessage);
+      }
     } catch (uploadError) {
-      setError(uploadError.message);
-      if (uploadedCount) setNotice(`${uploadedCount} resume${uploadedCount === 1 ? "" : "s"} uploaded before the error.`);
+      const progress = uploadedCount
+        ? ` ${uploadedCount} resume${uploadedCount === 1 ? "" : "s"} uploaded before the error.`
+        : "";
+      setError(`${uploadError.message}${progress}`);
     } finally {
       setUploadProgress("");
       setBusy(false);
       form.reset();
     }
+  }
+
+  async function uploadFiles(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const files = Array.from(form.elements.resumes.files);
+    if (!files.length) return;
+    await uploadSelectedFiles(
+      files,
+      form,
+      (batch) => uploadLibraryResumes(authUser, batch),
+    );
+  }
+
+  async function uploadCandidates(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const files = Array.from(form.elements.resumes.files);
+    if (!files.length) return;
+    if (!clientId) {
+      setError("Select a client before uploading candidates.");
+      return;
+    }
+    await uploadSelectedFiles(
+      files,
+      form,
+      (batch) => uploadResumes(authUser, clientId, batch),
+    );
   }
 
   async function analyzeCandidate(candidate) {
@@ -258,6 +340,57 @@ function Dashboard({ authUser, onSignOut }) {
     } finally {
       setAnalyzingId("");
     }
+  }
+
+  async function analyzeResume(resume) {
+    setError("");
+    setNotice("");
+    setMatchingResumeId(resume.id);
+    try {
+      if (!clientId || !selectedJobId) {
+        throw new Error("Select a client and open job requirement first.");
+      }
+      await apiJson(
+        authUser,
+        `/api/resumes/${encodeURIComponent(resume.id)}/analyze`,
+        {
+          method: "POST",
+          body: JSON.stringify({ clientId, jobId: selectedJobId }),
+        },
+      );
+      await refreshWorkspace();
+      setNotice("Resume match analysis completed.");
+    } catch (analysisError) {
+      setError(analysisError.message);
+    } finally {
+      setMatchingResumeId("");
+    }
+  }
+
+  async function setResumeStatus(resume, status) {
+    await runAction(async () => {
+      await apiJson(
+        authUser,
+        `/api/resumes/${encodeURIComponent(resume.id)}/match`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ clientId, jobId: selectedJobId, status }),
+        },
+      );
+      await refreshWorkspace();
+    }, `Candidate moved to ${status.toLowerCase()}.`);
+  }
+
+  async function openLibraryResume(resume) {
+    await runAction(async () => {
+      const blob = await downloadLibraryResume(authUser, resume.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = resume.resumeFileName || "resume";
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
   }
 
   async function setCandidateStatus(candidate, status) {
@@ -309,11 +442,11 @@ function Dashboard({ authUser, onSignOut }) {
               type="button"
             >
               <span aria-hidden="true">{({
-                overview: "◫", clients: "▣", jobs: "▤", candidates: "♙",
+                overview: "◫", clients: "▣", jobs: "▤", "resume-library": "▧", candidates: "♙",
                 shortlist: "☆", reports: "▥",
               })[page]}</span>
               {label}
-              {page === "shortlist" && shortlistedCount > 0 && <span className="nav-count">{shortlistedCount}</span>}
+              {page === "shortlist" && resumeShortlistedCount + shortlistedCount > 0 && <span className="nav-count">{resumeShortlistedCount + shortlistedCount}</span>}
             </button>
           ))}
         </nav>
@@ -333,7 +466,7 @@ function Dashboard({ authUser, onSignOut }) {
           {clients.length > 0 && (
             <label className="client-picker">
               <span>Active client</span>
-              <select value={clientId} onChange={(event) => setClientId(event.target.value)}>
+              <select value={clientId} onChange={(event) => { setClientId(event.target.value); setSelectedJobId(""); }}>
                 {clients.map((client) => <option key={client.id} value={client.id}>{client.organizationName}</option>)}
               </select>
             </label>
@@ -351,17 +484,17 @@ function Dashboard({ authUser, onSignOut }) {
           <div className="dashboard-content">
             <section className="welcome-panel">
               <div><p className="eyebrow">YOUR PIPELINE AT A GLANCE</p><h2>{selectedClient?.organizationName || "Welcome to your ATS"}</h2><p>Manage requirements, discover talent, and keep every hiring decision in one place.</p></div>
-              <button className="primary-button compact-button" type="button" onClick={() => setActivePage("candidates")}>Review candidates</button>
+              <button className="primary-button compact-button" type="button" onClick={() => setActivePage("resume-library")}>Upload resumes</button>
             </section>
             <div className="stat-grid">
               <article className="stat-card"><span>Active jobs</span><strong>{openJobs.length}</strong><small>For the selected client</small></article>
-              <article className="stat-card"><span>Total candidates</span><strong>{candidates.length}</strong><small>Across this client’s pipeline</small></article>
-              <article className="stat-card"><span>AI recommendations</span><strong>{recommendedCount}</strong><small>Human review is still required</small></article>
-              <article className="stat-card"><span>Shortlisted</span><strong>{shortlistedCount}</strong><small>Manually selected candidates</small></article>
+              <article className="stat-card"><span>Resume library</span><strong>{resumes.length}</strong><small>Stored independently of clients</small></article>
+              <article className="stat-card"><span>AI recommendations</span><strong>{resumeRecommendedCount}</strong><small>For the selected job; human review required</small></article>
+              <article className="stat-card"><span>Shortlisted</span><strong>{resumeShortlistedCount}</strong><small>For the selected job</small></article>
             </div>
             <section className="panel">
               <div className="panel-heading"><div><p className="eyebrow">CURRENT CLIENT</p><h2>{selectedClient?.organizationName || "No client selected"}</h2></div><button className="secondary-button" type="button" onClick={() => setActivePage("clients")}>Manage clients</button></div>
-              <p className="muted">{selectedClient ? `${openJobs.length} open job${openJobs.length === 1 ? "" : "s"} · ${candidates.length} candidate${candidates.length === 1 ? "" : "s"}` : "Add a recruitment client to get started."}</p>
+              <p className="muted">{selectedClient ? `${openJobs.length} open job${openJobs.length === 1 ? "" : "s"} · ${resumes.length} resumes in your shared library` : "Add a recruitment client to get started."}</p>
               {aiStatus && !aiStatus.enabled && <p className="inline-notice">AI matching is not configured. Add OPENROUTER_API_KEY and OPENROUTER_MODEL to the backend environment to enable candidate analysis.</p>}
             </section>
           </div>
@@ -375,7 +508,7 @@ function Dashboard({ authUser, onSignOut }) {
                 <div className="client-list">
                   {clients.map((client) => (
                     <article className={`client-row ${client.id === clientId ? "selected" : ""}`} key={client.id}>
-                      <button type="button" className="client-select" onClick={() => setClientId(client.id)}>
+                      <button type="button" className="client-select" onClick={() => { setClientId(client.id); setSelectedJobId(""); }}>
                         <strong>{client.organizationName}</strong><span>{client.contactPerson || client.companyNature || "Recruitment client"}</span>
                       </button>
                       <button className="text-button" type="button" onClick={() => archiveClient(client)}>Archive</button>
@@ -426,16 +559,79 @@ function Dashboard({ authUser, onSignOut }) {
           </div>
         )}
 
-        {(activePage === "candidates" || activePage === "shortlist") && (
+        {(activePage === "resume-library" || activePage === "shortlist") && (
           <div className="dashboard-content">
-            <section className="panel upload-panel">
-              <div><p className="eyebrow">PRIVATE DRIVE STORAGE</p><h2>Add resumes</h2><p className="muted">Upload PDF or DOCX files. Select up to 8 per transfer; large batches are split automatically.</p></div>
+            {activePage === "resume-library" && <section className="panel upload-panel">
+              <div>
+                <p className="eyebrow">PRIVATE DRIVE STORAGE</p>
+                <h2>Upload resumes</h2>
+                <p className="muted">Add PDF or DOCX files to your private resume library. Resumes are not assigned to a client until you match them to a job.</p>
+              </div>
               <form className="upload-form" onSubmit={uploadFiles}>
-                <input type="file" name="resumes" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple required disabled={!clientId || busy} />
-                <button className="primary-button compact-button" type="submit" disabled={!clientId || busy}>Upload resumes</button>
+                <input type="file" name="resumes" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple required disabled={busy} />
+                <button className="primary-button compact-button" type="submit" disabled={busy}>Upload resumes</button>
               </form>
               {uploadProgress && <p className="muted" role="status">{uploadProgress}</p>}
+            </section>}
+            <section className="panel">
+              <div className="panel-heading">
+                <div><p className="eyebrow">AI-ASSISTED SCREENING</p><h2>{activePage === "shortlist" ? "Shortlisted matches" : "Match resumes to a job"}</h2></div>
+                <span className="soft-badge">{displayedResumes.length} resumes</span>
+              </div>
+              <div className="candidate-controls">
+                <label className="compact-select">
+                  <span className="sr-only">Job requirement for resume matching</span>
+                  <select value={selectedJobId} onChange={(event) => setSelectedJobId(event.target.value)} disabled={!clientId || !openJobs.length}>
+                    <option value="">Select an open job</option>
+                    {openJobs.map((job) => <option value={job.id} key={job.id}>{job.title}</option>)}
+                  </select>
+                </label>
+                <label className="search-field"><span className="sr-only">Search resumes</span><input type="search" placeholder="Search candidates, skills, filenames…" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
+                <label className="compact-select"><span className="sr-only">Filter by match status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All</option>{statuses.map((status) => <option key={status}>{status}</option>)}</select></label>
+                <label className="privacy-toggle"><input type="checkbox" checked={includePii} onChange={(event) => setIncludePii(event.target.checked)} /> Reveal personal details</label>
+              </div>
+              {(!clientId || !selectedJobId) && <p className="inline-notice">Choose a client and create or select an open job requirement to see job-specific scores and recommendations.</p>}
+              {aiStatus && !aiStatus.enabled && <p className="inline-notice">AI matching is disabled until OPENROUTER_API_KEY and OPENROUTER_MODEL are set in the backend environment.</p>}
+              {displayedResumes.length === 0 ? <p className="empty-state">{activePage === "shortlist" ? "No resumes have been shortlisted for this job yet." : "No resumes found. Upload resumes here; you can match them to any client job later."}</p> : (
+                <div className="table-scroll">
+                  <table className="candidate-table">
+                    <thead><tr><th>Candidate</th><th>Resume</th><th>Skills detected</th><th>Job match</th><th>Decision</th><th>Actions</th></tr></thead>
+                    <tbody>
+                      {displayedResumes.map((resume) => (
+                        <tr key={resume.id}>
+                          <td><strong>{resume.candidateName}</strong>{resume.recommended && <span className="recommend-badge">Recommended</span>}{includePii && <small>{resume.email || "No email extracted"}<br />{resume.contactNumber || "No phone extracted"}</small>}</td>
+                          <td>{resume.resumeFileName}<button className="table-link" type="button" onClick={() => openLibraryResume(resume)}>Download</button></td>
+                          <td><div className="tag-row">{(resume.skills || []).slice(0, 5).map((skill) => <span className="skill-tag" key={skill}>{skill}</span>)}</div>{resume.totalExperience > 0 && <small>{resume.totalExperience} yrs experience</small>}</td>
+                          <td>{resume.matchScore == null ? <span className="muted">Not analyzed</span> : <strong className="score-value">{resume.matchScore}%</strong>}{resume.matchRationale && <small className="match-rationale" title={resume.matchRationale}>{resume.matchRationale}</small>}</td>
+                          <td>{resume.matchScore == null ? <span className="muted">—</span> : <select className="status-select" value={resume.status || "New"} onChange={(event) => setResumeStatus(resume, event.target.value)} aria-label={`Set shortlist status for ${resume.candidateName}`} disabled={busy}>{statuses.map((status) => <option key={status}>{status}</option>)}</select>}</td>
+                          <td><div className="action-stack"><button className="table-link" type="button" disabled={!aiStatus?.enabled || matchingResumeId === resume.id || !clientId || !selectedJobId} onClick={() => analyzeResume(resume)}>{matchingResumeId === resume.id ? "Analyzing…" : "Analyze match"}</button></div></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {resumes.some((resume) => resume.recommended) && <p className="muted">Recommended matches have a score of 75% or higher. Scores are advisory; review each resume before shortlisting.</p>}
             </section>
+          </div>
+        )}
+
+        {(activePage === "candidates" || activePage === "shortlist") && (
+          <div className="dashboard-content">
+            {activePage === "candidates" && (
+              <section className="panel upload-panel">
+                <div>
+                  <p className="eyebrow">CLIENT CANDIDATE PIPELINE</p>
+                  <h2>Upload candidates</h2>
+                  <p className="muted">Store resumes in this client’s private Drive folder and add candidates directly to its pipeline.</p>
+                </div>
+                <form className="upload-form" onSubmit={uploadCandidates}>
+                  <input type="file" name="resumes" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" multiple required disabled={busy || !clientId} />
+                  <button className="primary-button compact-button" type="submit" disabled={busy || !clientId}>Upload candidates</button>
+                </form>
+                {uploadProgress && <p className="muted" role="status">{uploadProgress}</p>}
+              </section>
+            )}
             <section className="panel">
               <div className="panel-heading"><div><p className="eyebrow">{activePage === "shortlist" ? "HUMAN-SELECTED TALENT" : "CANDIDATE PIPELINE"}</p><h2>{activePage === "shortlist" ? "Shortlisted candidates" : "Candidates"}</h2></div><span className="soft-badge">{displayedCandidates.length} shown</span></div>
               <div className="candidate-controls">

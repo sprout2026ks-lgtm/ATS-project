@@ -19,7 +19,16 @@ async function request(user, path, options = {}) {
 
   if (!response.ok) {
     const result = await response.json().catch(() => ({}));
-    throw new Error(result.error || `The ATS API returned HTTP ${response.status}.`);
+    const failures = Array.isArray(result.failed)
+      ? result.failed
+        .map((item) => `${item.resumeFileName || "Resume"}: ${item.error || "Upload failed."}`)
+        .join("; ")
+      : "";
+    throw new Error(
+      [result.error || `The ATS API returned HTTP ${response.status}.`, failures]
+        .filter(Boolean)
+        .join(" "),
+    );
   }
   return response;
 }
@@ -38,6 +47,24 @@ export async function uploadResumes(user, clientId, files) {
     { method: "POST", body: formData },
   );
   return response.json();
+}
+
+export async function uploadLibraryResumes(user, files) {
+  const formData = new FormData();
+  files.forEach((file) => formData.append("files", file));
+  const response = await request(user, "/api/resumes", {
+    method: "POST",
+    body: formData,
+  });
+  return response.json();
+}
+
+export async function downloadLibraryResume(user, resumeId) {
+  const response = await request(
+    user,
+    `/api/resumes/${encodeURIComponent(resumeId)}/resume`,
+  );
+  return response.blob();
 }
 
 export async function downloadResume(user, clientId, applicantId) {

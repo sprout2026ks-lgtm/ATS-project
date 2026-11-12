@@ -305,6 +305,58 @@ class AtsApiTests(unittest.TestCase):
         self.assertEqual(saved["driveFileId"], "private-resume")
         self.assertEqual(saved["candidateName"], "Ada Lovelace")
 
+    def test_library_upload_stores_original_in_private_drive_folder(self):
+        user_reference = self.database.collection.return_value.document.return_value
+        user_reference.get.return_value.to_dict.return_value = {}
+        resume_reference = (
+            user_reference.collection.return_value.document.return_value
+        )
+        resume_reference.id = "resume-123456"
+        drive = Mock()
+        drive.files.return_value.create.return_value.execute.side_effect = [
+            {"id": "resume-folder"},
+            {"id": "private-resume"},
+        ]
+        document = io.BytesIO()
+        with zipfile.ZipFile(document, "w") as archive:
+            archive.writestr(
+                "word/document.xml",
+                (
+                    '<w:document xmlns:w="http://schemas.openxmlformats.org/'
+                    'wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>'
+                    "Ada Lovelace ada@example.com Python"
+                    "</w:t></w:r></w:p></w:body></w:document>"
+                ),
+            )
+        with patch.dict(
+            os.environ,
+            {"GOOGLE_DRIVE_CREDENTIALS_FILE": "credentials/drive-user.json"},
+        ), patch(
+            "backend.app.auth.verify_id_token", return_value=VERIFIED_CLAIMS
+        ), patch(
+            "backend.app.load_credentials_from_file",
+            return_value=(Mock(), "test-project"),
+        ), patch(
+            "backend.app.build", return_value=drive
+        ):
+            response = self.client.post(
+                "/api/resumes",
+                headers=AUTH_HEADERS,
+                data={"files": (io.BytesIO(document.getvalue()), "ada-resume.docx")},
+                content_type="multipart/form-data",
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["uploaded"][0]["candidateName"], "Candidate RESUME")
+        self.assertEqual(response.json["uploaded"][0]["resumeFileName"], "Resume.docx")
+        self.assertEqual(drive.files.return_value.create.call_count, 2)
+        uploaded_file = drive.files.return_value.create.call_args_list[1]
+        self.assertEqual(uploaded_file.kwargs["body"]["parents"], ["resume-folder"])
+        resume_reference.set.assert_called_once()
+        saved = resume_reference.set.call_args.args[0]
+        self.assertEqual(saved["driveFileId"], "private-resume")
+        self.assertEqual(saved["candidateName"], "Ada Lovelace")
+
     def test_resume_redaction_removes_contact_details(self):
         redacted = redact_resume_text(
             "Ada Lovelace, ada@example.com, +1 555 123 4567, Python",
