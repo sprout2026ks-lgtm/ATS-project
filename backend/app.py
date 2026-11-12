@@ -33,6 +33,7 @@ MAX_RESUME_SIZE = 15 * 1024 * 1024
 MAX_UPLOAD_FILES = 8
 MAX_EXTRACTED_TEXT = 80_000
 ALLOWED_EXTENSIONS = {".pdf", ".docx"}
+INDUSTRIES = {"IT", "Banking", "Medical", "Other"}
 SKILL_TERMS = {
     "accounting", "agile", "aws", "azure", "budgeting", "c++", "customer service",
     "data analysis", "data science", "django", "docker", "excel", "fastapi",
@@ -78,8 +79,18 @@ def extract_candidate_fields(text, fallback_name):
         if line.strip()
     ]
     candidate_name = fallback_name
-    if cleaned_lines:
-        first_line = cleaned_lines[0]
+    ignored_headings = {
+        "curriculum vitae",
+        "cv",
+        "experience",
+        "profile",
+        "professional summary",
+        "resume",
+        "skills",
+        "summary",
+    }
+    for line in cleaned_lines[:8]:
+        first_line = line
         contact_matches = [
             match.start()
             for pattern in (
@@ -91,8 +102,13 @@ def extract_candidate_fields(text, fallback_name):
         if contact_matches:
             first_line = first_line[:min(contact_matches)]
         first_line = first_line.strip(" ,|-")
-        if re.fullmatch(r"[A-Za-z][A-Za-z .'-]{1,70}", first_line) and len(first_line.split()) <= 5:
+        if (
+            first_line.casefold() not in ignored_headings
+            and re.fullmatch(r"[A-Za-z][A-Za-z .'-]{1,70}", first_line)
+            and len(first_line.split()) <= 5
+        ):
             candidate_name = first_line
+            break
 
     text_lower = text.casefold()
     skills = sorted(skill for skill in SKILL_TERMS if re.search(
@@ -109,6 +125,30 @@ def extract_candidate_fields(text, fallback_name):
         "skills": skills,
         "totalExperience": max(experience_matches, default=0),
     }
+
+
+def candidate_name_from_filename(filename, fallback_name):
+    stem = Path(filename).stem.replace("_", " ").replace("-", " ").strip()
+    stem = re.sub(
+        r"\s+(?:curriculum vitae|resume|cv|profile)(?:\s+\d{4})?$",
+        "",
+        stem,
+        flags=re.I,
+    ).strip()
+    if (
+        stem.casefold() not in {
+            "cv",
+            "curriculum vitae",
+            "document",
+            "profile",
+            "resume",
+            "untitled",
+        }
+        and re.fullmatch(r"[A-Za-z][A-Za-z .']{1,70}", stem)
+        and len(stem.split()) <= 5
+    ):
+        return stem
+    return fallback_name
 
 
 def redact_resume_text(text, candidate_name):
@@ -361,6 +401,30 @@ def create_app():
         user_ref.update({"resumeDriveFolderId": folder_id})
         return folder_id
 
+    def industry_drive_folder(drive, parent_id, industry):
+        query = (
+            f"name = '{industry}' and "
+            "mimeType = 'application/vnd.google-apps.folder' and "
+            f"'{parent_id}' in parents and trashed = false"
+        )
+        folders = drive.files().list(
+            q=query,
+            spaces="drive",
+            fields="files(id)",
+            pageSize=1,
+        ).execute().get("files", [])
+        if folders:
+            return folders[0]["id"]
+        folder = drive.files().create(
+            body={
+                "name": industry,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent_id],
+            },
+            fields="id",
+        ).execute()
+        return folder["id"]
+
     def client_payload(document):
         client = document.to_dict() or {}
         client.pop("driveFolderId", None)
@@ -371,14 +435,14 @@ def create_app():
         applicant.pop("driveFileId", None)
         applicant.pop("extractedText", None)
         applicant.pop("resumeText", None)
+        applicant.setdefault("candidateName", f"Candidate {document.id[:6].upper()}")
         if not include_pii:
-            applicant["candidateName"] = f"Candidate {document.id[:6].upper()}"
             applicant["email"] = ""
             applicant["contactNumber"] = ""
             applicant["location"] = ""
             applicant["comments"] = ""
-            filename = Path(applicant.get("resumeFileName", "")).name
-            applicant["resumeFileName"] = f"Resume{Path(filename).suffix.lower()}"
+        if applicant.get("resumeFileName"):
+            applicant["resumeFileName"] = Path(applicant["resumeFileName"]).name
         uploaded_at = applicant.get("uploadedAt")
         if hasattr(uploaded_at, "isoformat"):
             applicant["uploadedAt"] = uploaded_at.isoformat()
@@ -389,13 +453,13 @@ def create_app():
         resume.pop("driveFileId", None)
         resume.pop("extractedText", None)
         resume.pop("resumeText", None)
+        resume.setdefault("candidateName", f"Candidate {document.id[:6].upper()}")
         if not include_pii:
-            resume["candidateName"] = f"Candidate {document.id[:6].upper()}"
             resume["email"] = ""
             resume["contactNumber"] = ""
             resume["location"] = ""
-            filename = Path(resume.get("resumeFileName", "")).name
-            resume["resumeFileName"] = f"Resume{Path(filename).suffix.lower()}"
+        if resume.get("resumeFileName"):
+            resume["resumeFileName"] = Path(resume["resumeFileName"]).name
         uploaded_at = resume.get("uploadedAt")
         if hasattr(uploaded_at, "isoformat"):
             resume["uploadedAt"] = uploaded_at.isoformat()
@@ -609,6 +673,9 @@ def create_app():
     @app.post("/api/resumes")
     @require_user()
     def upload_resumes():
+        industry = request.form.get("industry", "Other").strip()
+        if not isinstance(industry, str) or industry not in INDUSTRIES:
+            return jsonify({"error": "Choose a supported resume industry."}), 400
         files = request.files.getlist("files")
         selected_files = [file for file in files if file.filename]
         if not selected_files:
@@ -635,7 +702,9 @@ def create_app():
 
         try:
             drive = drive_service()
-            folder_id = resume_drive_folder(drive)
+            folder_id = industry_drive_folder(
+                drive, resume_drive_folder(drive), industry
+            )
         except (
             DefaultCredentialsError,
             GoogleAPIError,
@@ -660,10 +729,14 @@ def create_app():
                     fields="id",
                 ).execute()
                 drive_file_id = drive_file["id"]
-                fields = extract_candidate_fields(text, f"Candidate {resume_ref.id[:6].upper()}")
+                fallback_name = candidate_name_from_filename(
+                    filename, f"Candidate {resume_ref.id[:6].upper()}"
+                )
+                fields = extract_candidate_fields(text, fallback_name)
                 resume_ref.set({
                     **fields,
                     "resumeFileName": filename,
+                    "industry": industry,
                     "driveFileId": drive_file_id,
                     "extractedText": text,
                     "status": "New",
@@ -672,8 +745,9 @@ def create_app():
                 })
                 uploaded.append({
                     "id": resume_ref.id,
-                    "candidateName": f"Candidate {resume_ref.id[:6].upper()}",
-                    "resumeFileName": f"Resume{Path(filename).suffix.lower()}",
+                    "candidateName": fields["candidateName"],
+                    "resumeFileName": filename,
+                    "industry": industry,
                 })
             except (GoogleAPIError, HttpError, KeyError):
                 app.logger.exception("Could not store uploaded resume or resume record")
@@ -696,6 +770,9 @@ def create_app():
     def list_resumes():
         search = request.args.get("search", "").strip().casefold()
         status_filter = request.args.get("status", "").strip()
+        industry_filter = request.args.get("industry", "").strip()
+        if industry_filter and industry_filter not in INDUSTRIES:
+            return jsonify({"error": "Select a supported resume industry."}), 400
         include_pii = request.args.get("include_pii") == "true"
         client_id = request.args.get("client_id", "").strip()
         job_id = request.args.get("job_id", "").strip()
@@ -716,6 +793,8 @@ def create_app():
                     ).get()
                     match = match_snapshot.to_dict() if match_snapshot.exists else None
                 data = document.to_dict() or {}
+                if industry_filter and data.get("industry", "Other") != industry_filter:
+                    continue
                 if status_filter and (match or {}).get("status", "New") != status_filter:
                     continue
                 searchable = " ".join(
@@ -789,6 +868,55 @@ def create_app():
             return jsonify({"error": "Could not save the AI assessment."}), 503
         return jsonify({"assessment": {**assessment, "analyzedAt": None}})
 
+    @app.patch("/api/resumes/<resume_id>")
+    @require_user()
+    def update_resume(resume_id):
+        body = json_body()
+        industry = body.get("industry")
+        if not isinstance(industry, str) or industry not in INDUSTRIES:
+            return jsonify({"error": "Choose a supported resume industry."}), 400
+        resume_ref = resume_reference(resume_id)
+        try:
+            resume_snapshot = resume_ref.get()
+            if not resume_snapshot.exists:
+                return jsonify({"error": "Resume not found"}), 404
+            resume = resume_snapshot.to_dict() or {}
+            drive_file_id = resume.get("driveFileId")
+            if not drive_file_id:
+                return jsonify({"error": "Resume file not found"}), 404
+            drive = drive_service()
+            existing_file = drive.files().get(
+                fileId=drive_file_id,
+                fields="parents",
+            ).execute()
+            current_parents = existing_file.get("parents", [])
+            parent_id = industry_drive_folder(
+                drive, resume_drive_folder(drive), industry
+            )
+            if parent_id not in current_parents:
+                drive.files().update(
+                    fileId=drive_file_id,
+                    addParents=parent_id,
+                    removeParents=",".join(current_parents),
+                    fields="id,parents",
+                ).execute()
+            resume_ref.update({
+                "industry": industry,
+                "updatedAt": firestore.SERVER_TIMESTAMP,
+            })
+        except (
+            DefaultCredentialsError,
+            GoogleAPIError,
+            HttpError,
+            KeyError,
+            OSError,
+            RuntimeError,
+            ValueError,
+        ):
+            app.logger.exception("Could not move resume to its industry folder")
+            return jsonify({"error": "Could not move the resume in Google Drive."}), 503
+        return jsonify({"industry": industry})
+
     @app.patch("/api/resumes/<resume_id>/match")
     @require_user()
     def update_resume_match(resume_id):
@@ -840,6 +968,9 @@ def create_app():
     @app.post("/api/clients/<client_id>/applicants")
     @require_user()
     def upload_applicants(client_id):
+        industry = request.form.get("industry", "Other").strip()
+        if industry not in INDUSTRIES:
+            return jsonify({"error": "Choose a supported resume industry."}), 400
         files = request.files.getlist("files")
         selected_files = [file for file in files if file.filename]
         if not selected_files:
@@ -870,7 +1001,10 @@ def create_app():
             if not client_snapshot.exists:
                 return jsonify({"error": "Client not found"}), 404
             drive = drive_service()
-            folder_id = client_drive_folder(drive, client_ref, client_snapshot.to_dict() or {})
+            client_folder_id = client_drive_folder(
+                drive, client_ref, client_snapshot.to_dict() or {}
+            )
+            folder_id = industry_drive_folder(drive, client_folder_id, industry)
         except (
             DefaultCredentialsError,
             GoogleAPIError,
@@ -895,10 +1029,14 @@ def create_app():
                     fields="id",
                 ).execute()
                 drive_file_id = drive_file["id"]
-                fields = extract_candidate_fields(text, f"Candidate {applicant_ref.id[:6].upper()}")
+                fallback_name = candidate_name_from_filename(
+                    filename, f"Candidate {applicant_ref.id[:6].upper()}"
+                )
+                fields = extract_candidate_fields(text, fallback_name)
                 applicant_ref.set({
                     **fields,
                     "resumeFileName": filename,
+                    "industry": industry,
                     "driveFileId": drive_file_id,
                     "extractedText": text,
                     "status": "New",
@@ -909,8 +1047,9 @@ def create_app():
                 })
                 uploaded.append({
                     "id": applicant_ref.id,
-                    "candidateName": f"Candidate {applicant_ref.id[:6].upper()}",
-                    "resumeFileName": f"Resume{Path(filename).suffix.lower()}",
+                    "candidateName": fields["candidateName"],
+                    "resumeFileName": filename,
+                    "industry": industry,
                 })
             except (GoogleAPIError, HttpError, KeyError):
                 app.logger.exception("Could not store uploaded resume or candidate record")
@@ -933,6 +1072,9 @@ def create_app():
     def list_applicants(client_id):
         search = request.args.get("search", "").strip().casefold()
         status_filter = request.args.get("status", "").strip()
+        industry_filter = request.args.get("industry", "").strip()
+        if industry_filter and industry_filter not in INDUSTRIES:
+            return jsonify({"error": "Select a supported resume industry."}), 400
         include_pii = request.args.get("include_pii") == "true"
         try:
             if is_missing_client(client_id):
@@ -941,6 +1083,8 @@ def create_app():
             applicants = []
             for document in documents:
                 data = document.to_dict() or {}
+                if industry_filter and data.get("industry", "Other") != industry_filter:
+                    continue
                 if status_filter and data.get("status") != status_filter:
                     continue
                 searchable = " ".join(
@@ -1056,35 +1200,129 @@ def create_app():
             download_name=filename,
         )
 
+    def build_client_report(client_id):
+        try:
+            client_ref = client_reference(client_id)
+            if not client_ref.get().exists:
+                return None, (jsonify({"error": "Client not found"}), 404)
+            applicants = [
+                document.to_dict() or {}
+                for document in client_ref.collection("applicants").limit(500).stream()
+            ]
+            jobs = list(client_ref.collection("jobRequirements").limit(500).stream())
+            job_titles = {
+                document.id: (document.to_dict() or {}).get("title", "Job requirement")
+                for document in jobs
+            }
+            analyses = []
+            counts = {status: 0 for status in ("New", "Reviewed", "Shortlisted", "Rejected", "Hired")}
+            for applicant in applicants:
+                status = applicant.get("status", "New")
+                counts[status] = counts.get(status, 0) + 1
+                score = applicant.get("matchScore")
+                if isinstance(score, (int, float)) and not isinstance(score, bool):
+                    job_id = applicant.get("analyzedJobId", "")
+                    analyses.append({
+                        "candidateName": applicant.get("candidateName", "Candidate"),
+                        "resumeFileName": Path(applicant.get("resumeFileName", "")).name,
+                        "industry": applicant.get("industry", "Other"),
+                        "jobTitle": job_titles.get(job_id, "Job requirement"),
+                        "matchScore": round(float(score), 1),
+                        "recommended": bool(applicant.get("recommended")),
+                        "status": status,
+                        "matchRationale": applicant.get("matchRationale", ""),
+                    })
+
+            matched_resume_ids = set()
+            resumes = user_resumes().limit(500).stream()
+            for resume_document in resumes:
+                resume = resume_document.to_dict() or {}
+                match_documents = resume_reference(resume_document.id).collection("matches").stream()
+                for match_document in match_documents:
+                    match = match_document.to_dict() or {}
+                    if match.get("clientId") != client_id:
+                        continue
+                    status = match.get("status", "New")
+                    counts[status] = counts.get(status, 0) + 1
+                    matched_resume_ids.add(resume_document.id)
+                    score = match.get("matchScore")
+                    if not isinstance(score, (int, float)) or isinstance(score, bool):
+                        continue
+                    job_id = match.get("analyzedJobId", "")
+                    analyses.append({
+                        "candidateName": resume.get("candidateName", "Candidate"),
+                        "resumeFileName": Path(resume.get("resumeFileName", "")).name,
+                        "industry": resume.get("industry", "Other"),
+                        "jobTitle": job_titles.get(job_id, "Job requirement"),
+                        "matchScore": round(float(score), 1),
+                        "recommended": bool(match.get("recommended")),
+                        "status": status,
+                        "matchRationale": match.get("matchRationale", ""),
+                    })
+        except GoogleAPIError:
+            app.logger.exception("Could not build recruitment report")
+            return None, (jsonify({"error": "Report service is unavailable"}), 503)
+
+        scores = [item["matchScore"] for item in analyses]
+        analyses.sort(key=lambda item: item["matchScore"], reverse=True)
+        return {
+            "totalCandidates": len(applicants) + len(matched_resume_ids),
+            "openJobs": sum(
+                1 for job in jobs if (job.to_dict() or {}).get("status") == "Open"
+            ),
+            "recommended": sum(1 for item in analyses if item["recommended"]),
+            "averageMatchScore": round(sum(scores) / len(scores), 1) if scores else None,
+            "analyzedCount": len(analyses),
+            "statusCounts": counts,
+            "analyses": analyses,
+        }, None
+
+    @app.get("/api/clients/<client_id>/reports/data")
+    @require_user()
+    def client_report_data(client_id):
+        report, error = build_client_report(client_id)
+        if error:
+            return error
+        return jsonify(report)
+
     @app.get("/api/clients/<client_id>/reports")
     @require_user()
     def client_report(client_id):
-        try:
-            if is_missing_client(client_id):
-                return jsonify({"error": "Client not found"}), 404
-            applicants = [
-                document.to_dict() or {}
-                for document in client_reference(client_id).collection("applicants").stream()
-            ]
-            jobs = list(client_reference(client_id).collection("jobRequirements").stream())
-        except GoogleAPIError:
-            app.logger.exception("Could not build recruitment report")
-            return jsonify({"error": "Report service is unavailable"}), 503
-        counts = {status: 0 for status in ("New", "Reviewed", "Shortlisted", "Rejected", "Hired")}
-        for applicant in applicants:
-            status = applicant.get("status", "New")
-            counts[status] = counts.get(status, 0) + 1
-        recommended = sum(1 for applicant in applicants if applicant.get("recommended"))
-        analyzed = [item.get("matchScore") for item in applicants if isinstance(item.get("matchScore"), (int, float))]
+        report, error = build_client_report(client_id)
+        if error:
+            return error
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(["Metric", "Value"])
-        writer.writerow(["Total candidates", len(applicants)])
-        writer.writerow(["Open jobs", sum(1 for job in jobs if (job.to_dict() or {}).get("status") == "Open")])
-        writer.writerow(["AI recommended", recommended])
-        writer.writerow(["Average match score", round(sum(analyzed) / len(analyzed), 1) if analyzed else ""])
-        for status, count in counts.items():
+        writer.writerow(["Total candidates", report["totalCandidates"]])
+        writer.writerow(["Open jobs", report["openJobs"]])
+        writer.writerow(["AI analyses", report["analyzedCount"]])
+        writer.writerow(["AI recommended", report["recommended"]])
+        writer.writerow(["Average match score", report["averageMatchScore"] or ""])
+        for status, count in report["statusCounts"].items():
             writer.writerow([status, count])
+        writer.writerow([])
+        writer.writerow([
+            "Candidate",
+            "Resume",
+            "Industry",
+            "Job",
+            "Match score",
+            "Recommended",
+            "Status",
+            "AI rationale",
+        ])
+        for analysis in report["analyses"]:
+            writer.writerow([
+                analysis["candidateName"],
+                analysis["resumeFileName"],
+                analysis["industry"],
+                analysis["jobTitle"],
+                analysis["matchScore"],
+                analysis["recommended"],
+                analysis["status"],
+                analysis["matchRationale"],
+            ])
         return Response(
             output.getvalue(),
             mimetype="text/csv",
@@ -1095,4 +1333,4 @@ def create_app():
 
 
 if __name__ == "__main__":
-    create_app().run(host="127.0.0.1", port=int(os.environ.get("PORT", "5000")))
+    create_app().run(host="127.0.0.1", port=int(os.environ.get("PORT", "5051")))

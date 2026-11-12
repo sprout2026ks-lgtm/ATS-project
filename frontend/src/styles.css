@@ -640,7 +640,8 @@ footer {
 }
 
 .form-panel input,
-.form-panel textarea {
+.form-panel textarea,
+.form-panel select {
   width: 100%;
   min-height: 39px;
   border: 1px solid #dfe4ed;
@@ -783,6 +784,25 @@ footer {
   max-width: 290px;
   color: #69758b;
   font-size: 11px;
+}
+
+.industry-select {
+  display: grid;
+  min-width: 130px;
+  gap: 5px;
+  color: #69758b;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.industry-select select {
+  min-height: 39px;
+  border: 1px solid #e0e5ee;
+  border-radius: 8px;
+  background: #fff;
+  color: #34415b;
+  font-size: 11px;
+  padding: 0 28px 0 10px;
 }
 
 .candidate-controls {

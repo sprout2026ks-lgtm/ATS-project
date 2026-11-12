@@ -12,8 +12,12 @@ Firestore, and private Google Drive storage.
   on the backend. Image-only/scanned resumes need OCR and are not parsed yet.
 - Keep original resumes in a private Drive folder and retrieve them through the
   authenticated API.
-- Search candidates, hide personal details by default, reveal them for review,
-  and manage New, Reviewed, Shortlisted, Rejected, and Hired stages.
+- Search candidates, display parsed candidate names and original resume
+  filenames, hide contact details by default, and manage New, Reviewed,
+  Shortlisted, Rejected, and Hired stages.
+- Categorize clients and resumes as IT, Banking, Medical, or Other. Resume
+  library uploads are placed in matching private Google Drive industry folders
+  and can be filtered or reclassified by category in the ATS.
 - Request explainable, job-related matching from OpenRouter. Candidate data is
   not sent until a recruiter starts an analysis. Email addresses, phone
   numbers, and the extracted candidate name are redacted before the request.
@@ -54,8 +58,9 @@ Firestore, and private Google Drive storage.
    gcloud auth application-default login --scopes="https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive.file"
    ```
 
-   The backend creates a private folder for each client in this account's Drive
-   root. No pre-existing folder ID or folder sharing is required. If the backend
+   The    backend creates private client folders and an `ATS Resumes` library in this
+   account's Drive root. Resumes are grouped into IT, Banking, Medical, and
+   Other subfolders. No pre-existing folder ID or folder sharing is required. If the backend
    runs under a different account or ADC location, set
    `GOOGLE_DRIVE_CREDENTIALS_FILE` to that account's local ADC credential file.
 
@@ -96,7 +101,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-python -m flask --app app run --host 127.0.0.1 --port 5050
+python -m flask --app app run --host 127.0.0.1 --port 5051
 ```
 
 In another terminal:

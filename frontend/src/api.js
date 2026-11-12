@@ -1,4 +1,4 @@
-const apiBaseUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:5000";
+const apiBaseUrl = import.meta.env.VITE_API_URL || "http://127.0.0.1:5051";
 
 async function request(user, path, options = {}) {
   const token = await user.getIdToken();
@@ -38,9 +38,10 @@ export async function apiJson(user, path, options) {
   return response.json();
 }
 
-export async function uploadResumes(user, clientId, files) {
+export async function uploadResumes(user, clientId, files, industry) {
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file));
+  formData.append("industry", industry);
   const response = await request(
     user,
     `/api/clients/${encodeURIComponent(clientId)}/applicants`,
@@ -49,9 +50,10 @@ export async function uploadResumes(user, clientId, files) {
   return response.json();
 }
 
-export async function uploadLibraryResumes(user, files) {
+export async function uploadLibraryResumes(user, files, industry) {
   const formData = new FormData();
   files.forEach((file) => formData.append("files", file));
+  formData.append("industry", industry);
   const response = await request(user, "/api/resumes", {
     method: "POST",
     body: formData,
