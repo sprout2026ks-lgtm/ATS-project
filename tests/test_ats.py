@@ -120,8 +120,9 @@ class AtsApiTests(unittest.TestCase):
             "location": "London",
             "comments": "Speak with Ada",
             "driveFileId": "private-drive-id",
-            "extractedText": "private resume text",
+            "extractedText": "private resume text\nProfessional Experience: 5+ years",
             "skills": ["Python"],
+            "totalExperience": 0,
             "status": "New",
         }
         reference.collection.return_value.limit.return_value.stream.return_value = [
@@ -140,9 +141,34 @@ class AtsApiTests(unittest.TestCase):
         self.assertEqual(candidate["contactNumber"], "")
         self.assertEqual(candidate["resumeFileName"], "Ada-Lovelace-resume.pdf")
         self.assertEqual(candidate["location"], "")
+        self.assertEqual(candidate["totalExperience"], 5)
         self.assertEqual(candidate["comments"], "")
         self.assertNotIn("driveFileId", candidate)
         self.assertNotIn("extractedText", candidate)
+
+    def test_job_creation_saves_optional_location(self):
+        reference = self.user_client_reference()
+        client_snapshot = Mock()
+        client_snapshot.exists = True
+        reference.get.return_value = client_snapshot
+        job_reference = reference.collection.return_value.document.return_value
+        job_reference.id = "job-1"
+        job_reference.get.return_value.to_dict.return_value = {
+            "title": "Engineer",
+            "location": "London",
+            "minimumExperience": 0,
+        }
+        with patch("backend.app.auth.verify_id_token", return_value=VERIFIED_CLAIMS):
+            response = self.client.post(
+                "/api/clients/client-1/jobs",
+                headers=AUTH_HEADERS,
+                json={"title": " Engineer ", "location": " London "},
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["job"]["location"], "London")
+        saved_job = job_reference.set.call_args.args[0]
+        self.assertEqual(saved_job["location"], "London")
 
     def test_pdf_resume_text_is_extracted(self):
         import fitz
@@ -179,6 +205,23 @@ class AtsApiTests(unittest.TestCase):
         self.assertEqual(fields["email"], "ada@example.com")
         self.assertEqual(fields["totalExperience"], 5)
         self.assertIn("python", fields["skills"])
+
+    def test_candidate_experience_is_none_when_not_detected(self):
+        fields = extract_candidate_fields("Ada Lovelace\nPython", "Candidate 123456")
+
+        self.assertIsNone(fields["totalExperience"])
+
+    def test_candidate_experience_parses_common_resume_formats(self):
+        examples = (
+            ("Professional Experience: 5+ years", 5),
+            ("Total Experience: 3 years and 6 months", 3.5),
+            ("2 yrs of professional experience", 2),
+            ("4 years of experience", 4),
+        )
+        for resume_text, expected in examples:
+            with self.subTest(resume_text=resume_text):
+                fields = extract_candidate_fields(resume_text, "Candidate")
+                self.assertEqual(fields["totalExperience"], expected)
 
     def test_openrouter_request_redacts_resume_contact_details(self):
         client_reference = self.user_client_reference()

@@ -70,6 +70,33 @@ def extract_resume_text(filename, content):
     raise ValueError("Upload a PDF or DOCX resume.")
 
 
+def extract_total_experience(text):
+    years = r"\d+(?:\.\d+)?"
+    months = r"(?:\s*(?:,\s*|\s+and\s+)?(?P<months>\d+)\s*(?:months?|mos?)\b)?"
+    patterns = (
+        re.compile(
+            r"(?:(?:total|overall|professional|relevant|work)\s+)?experience"
+            r"\s*[:\-]?\s*(?P<years>" + years + r")\s*(?:\+|plus)?\s*"
+            r"(?:years?|yrs?)\b" + months,
+            re.I,
+        ),
+        re.compile(
+            r"(?P<years>" + years + r")\s*\+?\s*(?:years?|yrs?)\b" + months
+            + r"\s*(?:of|in)?\s*"
+            r"(?:(?:relevant|professional|overall|total|work)\s+)*"
+            r"(?:experience|exp\b)",
+            re.I,
+        ),
+    )
+    experience_matches = []
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            years_value = float(match.group("years"))
+            months_value = int(match.group("months") or 0)
+            experience_matches.append(years_value + months_value / 12)
+    return max(experience_matches) if experience_matches else None
+
+
 def extract_candidate_fields(text, fallback_name):
     email_match = re.search(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", text, re.I)
     phone_match = re.search(r"(?<!\w)(?:\+\d{1,3}[\s.-]?)?(?:\(?\d{2,4}\)?[\s.-]?)\d{3,4}[\s.-]?\d{3,4}(?!\w)", text)
@@ -114,16 +141,12 @@ def extract_candidate_fields(text, fallback_name):
     skills = sorted(skill for skill in SKILL_TERMS if re.search(
         r"(?<!\w)" + re.escape(skill) + r"(?!\w)", text_lower
     ))
-    experience_matches = [
-        float(match.group(1))
-        for match in re.finditer(r"(\d+(?:\.\d+)?)\+?\s*(?:years?|yrs?)\s+(?:of\s+)?experience", text_lower)
-    ]
     return {
         "candidateName": candidate_name,
         "email": email_match.group(0) if email_match else "",
         "contactNumber": phone_match.group(0).strip() if phone_match else "",
         "skills": skills,
-        "totalExperience": max(experience_matches, default=0),
+        "totalExperience": extract_total_experience(text_lower),
     }
 
 
@@ -431,7 +454,7 @@ def create_app():
         return {"id": document.id, **client}
 
     def applicant_payload(document, include_pii=False):
-        applicant = document.to_dict() or {}
+        applicant = dict(document.to_dict() or {})
         applicant.pop("driveFileId", None)
         applicant.pop("extractedText", None)
         applicant.pop("resumeText", None)
@@ -609,6 +632,9 @@ def create_app():
         description = body.get("description", "")
         if not isinstance(description, str) or len(description) > 5000:
             return jsonify({"error": "Description must be a string under 5,000 characters."}), 400
+        location = body.get("location", "")
+        if not isinstance(location, str) or len(location) > 200:
+            return jsonify({"error": "Location must be a string of no more than 200 characters."}), 400
         experience = body.get("minimumExperience", 0)
         if not isinstance(experience, (int, float)) or isinstance(experience, bool) or not 0 <= experience <= 60:
             return jsonify({"error": "minimumExperience must be between 0 and 60."}), 400
@@ -619,6 +645,7 @@ def create_app():
             reference.set({
                 "title": title,
                 "description": description.strip(),
+                "location": location.strip(),
                 "requiredSkills": list(dict.fromkeys(item.strip()[:80] for item in skills if item.strip()))[:50],
                 "preferredSkills": list(dict.fromkeys(item.strip()[:80] for item in preferred if item.strip()))[:50],
                 "minimumExperience": experience,
@@ -645,6 +672,11 @@ def create_app():
             if key == "status" and value not in ("Open", "Closed"):
                 return jsonify({"error": "status must be Open or Closed."}), 400
             updates[key] = value.strip()
+        if "location" in body:
+            value = body["location"]
+            if not isinstance(value, str) or len(value) > 200:
+                return jsonify({"error": "location must be a string of no more than 200 characters."}), 400
+            updates["location"] = value.strip()
         for key in ("requiredSkills", "preferredSkills"):
             if key in body:
                 value = body[key]
@@ -1093,7 +1125,15 @@ def create_app():
                 ).casefold()
                 if search and search not in searchable:
                     continue
-                applicants.append(applicant_payload(document, include_pii))
+                applicant = applicant_payload(document, include_pii)
+                if applicant.get("totalExperience") in (None, 0):
+                    resume_text = data.get("extractedText")
+                    applicant["totalExperience"] = (
+                        extract_total_experience(resume_text)
+                        if isinstance(resume_text, str)
+                        else None
+                    )
+                applicants.append(applicant)
         except GoogleAPIError:
             app.logger.exception("Could not load applicant records")
             return jsonify({"error": "Applicant service is unavailable"}), 503

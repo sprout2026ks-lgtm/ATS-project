@@ -19,6 +19,14 @@ const navigation = [
 ];
 const statuses = ["New", "Reviewed", "Shortlisted", "Rejected", "Hired"];
 const industries = ["IT", "Banking", "Medical", "Other"];
+const experienceFilters = [
+  ["All", "All experience"],
+  ["under-2", "Under 2 years"],
+  ["2-4", "2–4 years"],
+  ["5-9", "5–9 years"],
+  ["10-plus", "10+ years"],
+  ["not-detected", "Not detected"],
+];
 
 function splitSkills(value) {
   return value.split(",").map((skill) => skill.trim()).filter(Boolean);
@@ -52,6 +60,7 @@ function Dashboard({ authUser, onSignOut }) {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
   const [industryFilter, setIndustryFilter] = useState("All");
+  const [experienceFilter, setExperienceFilter] = useState("All");
   const [uploadIndustry, setUploadIndustry] = useState("Other");
   const [includePii, setIncludePii] = useState(false);
   const [notice, setNotice] = useState("");
@@ -77,6 +86,7 @@ function Dashboard({ authUser, onSignOut }) {
   const [jobForm, setJobForm] = useState({
     title: "",
     description: "",
+    location: "",
     requiredSkills: "",
     preferredSkills: "",
     minimumExperience: "0",
@@ -88,17 +98,50 @@ function Dashboard({ authUser, onSignOut }) {
     const source = activePage === "shortlist"
       ? candidates.filter((candidate) => candidate.status === "Shortlisted")
       : candidates;
-    return statusFilter === "All"
+    const term = search.trim().toLowerCase();
+    const statusFiltered = statusFilter === "All"
       ? source
       : source.filter((candidate) => candidate.status === statusFilter);
-  }, [activePage, candidates, statusFilter]);
-  const displayedResumes = useMemo(
-    () => resumes.filter((resume) => (
-      (activePage !== "shortlist" || resume.status === "Shortlisted")
-      && (statusFilter === "All" || (resume.status || "New") === statusFilter)
-    )),
-    [activePage, resumes, statusFilter],
-  );
+    const industryFiltered = industryFilter === "All"
+      ? statusFiltered
+      : statusFiltered.filter((candidate) => (candidate.industry || "Other") === industryFilter);
+    const searchFiltered = !term
+      ? industryFiltered
+      : industryFiltered.filter((candidate) => {
+          const haystack = [
+            candidate.candidateName,
+            candidate.resumeFileName,
+            candidate.industry,
+            ...(candidate.skills || []),
+          ].filter(Boolean).join(" ").toLowerCase();
+          return haystack.includes(term);
+        });
+    if (experienceFilter === "All") return searchFiltered;
+    return searchFiltered.filter((candidate) => {
+      const years = Number(candidate.totalExperience);
+      const hasExperience = typeof candidate.totalExperience === "number" && Number.isFinite(years);
+      if (experienceFilter === "not-detected") return !hasExperience;
+      if (!hasExperience) return false;
+      if (experienceFilter === "under-2") return years < 2;
+      if (experienceFilter === "2-4") return years >= 2 && years < 5;
+      if (experienceFilter === "5-9") return years >= 5 && years < 10;
+      return years >= 10;
+    });
+  }, [activePage, candidates, experienceFilter, industryFilter, search, statusFilter]);
+  const displayedResumes = useMemo(() => resumes.filter((resume) => {
+    if (activePage === "shortlist" && resume.status !== "Shortlisted") return false;
+    if (statusFilter !== "All" && (resume.status || "New") !== statusFilter) return false;
+    if (industryFilter !== "All" && (resume.industry || "Other") !== industryFilter) return false;
+    const term = search.trim().toLowerCase();
+    if (!term) return true;
+    const haystack = [
+      resume.candidateName,
+      resume.resumeFileName,
+      resume.industry,
+      ...(resume.skills || []),
+    ].filter(Boolean).join(" ").toLowerCase();
+    return haystack.includes(term);
+  }), [activePage, industryFilter, resumes, search, statusFilter]);
   const shortlistedCount = candidates.filter(
     (candidate) => candidate.status === "Shortlisted",
   ).length;
@@ -375,6 +418,7 @@ function Dashboard({ authUser, onSignOut }) {
       setJobForm({
         title: "",
         description: "",
+        location: "",
         requiredSkills: "",
         preferredSkills: "",
         minimumExperience: "0",
@@ -692,6 +736,7 @@ function Dashboard({ authUser, onSignOut }) {
                       <div className="panel-heading"><div><h3>{job.title}</h3><span className={`status-pill ${job.status === "Open" ? "status-open" : ""}`}>{job.status}</span></div><button className="secondary-button" type="button" onClick={() => toggleJob(job)}>{job.status === "Open" ? "Close role" : "Reopen"}</button></div>
                       <p className="muted">{job.description || "No additional description."}</p>
                       <div className="tag-row">{(job.requiredSkills || []).map((skill) => <span className="skill-tag" key={skill}>{skill}</span>)}</div>
+                      <small className="muted">{job.location ? `Location: ${job.location}` : "Location not specified"}</small>
                       <small className="muted">Minimum experience: {job.minimumExperience || 0} years</small>
                     </article>
                   ))}
@@ -701,6 +746,7 @@ function Dashboard({ authUser, onSignOut }) {
             <form className="panel form-panel" onSubmit={createJob}>
               <p className="eyebrow">DEFINE A ROLE</p><h2>New requirement</h2>
               <label>Job title<input value={jobForm.title} onChange={(event) => setJobForm({ ...jobForm, title: event.target.value })} required maxLength={200} disabled={!clientId} /></label>
+              <label>Location<input value={jobForm.location} onChange={(event) => setJobForm({ ...jobForm, location: event.target.value })} maxLength={200} disabled={!clientId} /></label>
               <label>Description<textarea rows="4" value={jobForm.description} onChange={(event) => setJobForm({ ...jobForm, description: event.target.value })} maxLength={5000} disabled={!clientId} /></label>
               <label>Required skills <span className="field-hint">Comma-separated</span><input value={jobForm.requiredSkills} onChange={(event) => setJobForm({ ...jobForm, requiredSkills: event.target.value })} placeholder="Python, SQL, communication" disabled={!clientId} /></label>
               <label>Preferred skills <span className="field-hint">Comma-separated</span><input value={jobForm.preferredSkills} onChange={(event) => setJobForm({ ...jobForm, preferredSkills: event.target.value })} disabled={!clientId} /></label>
@@ -793,20 +839,22 @@ function Dashboard({ authUser, onSignOut }) {
                 <label className="search-field"><span className="sr-only">Search candidates</span><input type="search" placeholder="Search candidates, skills, filenames…" value={search} onChange={(event) => setSearch(event.target.value)} /></label>
                 <label className="compact-select"><span className="sr-only">Filter candidates by industry</span><select value={industryFilter} onChange={(event) => setIndustryFilter(event.target.value)}><option value="All">All industries</option>{industries.map((industry) => <option key={industry}>{industry}</option>)}</select></label>
                 <label className="compact-select"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All</option>{statuses.map((status) => <option key={status}>{status}</option>)}</select></label>
+                <label className="compact-select"><span className="sr-only">Filter candidates by experience</span><select value={experienceFilter} onChange={(event) => setExperienceFilter(event.target.value)}>{experienceFilters.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
                 <label className="privacy-toggle"><input type="checkbox" checked={includePii} onChange={(event) => setIncludePii(event.target.checked)} /> Reveal personal details</label>
                 {activePage === "candidates" && <label className="compact-select"><span className="sr-only">Job for AI analysis</span><select value={selectedJobId} onChange={(event) => setSelectedJobId(event.target.value)}><option value="">Select job</option>{openJobs.map((job) => <option value={job.id} key={job.id}>{job.title}</option>)}</select></label>}
               </div>
               {displayedCandidates.length === 0 ? <p className="empty-state">{activePage === "shortlist" ? "No candidates have been shortlisted yet." : "No candidates found. Upload resumes to start the pipeline."}</p> : (
                 <div className="table-scroll">
                   <table className="candidate-table">
-                    <thead><tr><th>Candidate</th><th>Resume</th><th>Industry</th><th>Skills detected</th><th>Match</th><th>Status</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>Candidate</th><th>Resume</th><th>Industry</th><th>Skills detected</th><th>Experience</th><th>Match</th><th>Status</th><th>Actions</th></tr></thead>
                     <tbody>
                       {displayedCandidates.map((candidate) => (
                         <tr key={candidate.id}>
                           <td><strong>{candidate.candidateName}</strong>{candidate.recommended && <span className="recommend-badge">Recommended</span>}{includePii && <small>{candidate.email || "No email extracted"}<br />{candidate.contactNumber || "No phone extracted"}</small>}</td>
                           <td>{candidate.resumeFileName}<button className="table-link" type="button" onClick={() => openResume(candidate)}>Download</button></td>
                           <td>{candidate.industry || "Other"}</td>
-                          <td><div className="tag-row">{(candidate.skills || []).slice(0, 5).map((skill) => <span className="skill-tag" key={skill}>{skill}</span>)}</div>{candidate.totalExperience > 0 && <small>{candidate.totalExperience} yrs experience</small>}</td>
+                          <td><div className="tag-row">{(candidate.skills || []).slice(0, 5).map((skill) => <span className="skill-tag" key={skill}>{skill}</span>)}</div></td>
+                          <td>{typeof candidate.totalExperience === "number" && Number.isFinite(candidate.totalExperience) ? `${candidate.totalExperience} years` : <span className="muted">Not detected</span>}</td>
                           <td>{candidate.matchScore == null ? <span className="muted">Not analyzed</span> : <strong className="score-value">{candidate.matchScore}%</strong>}{candidate.matchRationale && <small className="match-rationale" title={candidate.matchRationale}>{candidate.matchRationale}</small>}</td>
                           <td><select className="status-select" value={candidate.status} onChange={(event) => setCandidateStatus(candidate, event.target.value)} aria-label={`Set status for ${candidate.candidateName}`}>{statuses.map((status) => <option key={status}>{status}</option>)}</select></td>
                           <td><div className="action-stack">{activePage === "candidates" && <button className="table-link" type="button" disabled={!aiStatus?.enabled || analyzingId === candidate.id || !selectedJobId} onClick={() => analyzeCandidate(candidate)}>{analyzingId === candidate.id ? "Analyzing…" : "Analyze match"}</button>}{candidate.status !== "Shortlisted" && <button className="table-link" type="button" onClick={() => setCandidateStatus(candidate, "Shortlisted")}>Shortlist</button>}</div></td>

@@ -5,16 +5,17 @@ Firestore, and private Google Drive storage.
 
 ## Features
 
-- Organize recruitment clients and their job requirements.
+- Organize recruitment clients and their job requirements, including role
+  locations.
 - Upload PDF and DOCX resumes individually or in batches. The interface splits
   larger selections into groups of eight; each file can be up to 15 MB.
 - Extract selectable resume text and basic contact, experience, and skill fields
   on the backend. Image-only/scanned resumes need OCR and are not parsed yet.
 - Keep original resumes in a private Drive folder and retrieve them through the
   authenticated API.
-- Search candidates, display parsed candidate names and original resume
-  filenames, hide contact details by default, and manage New, Reviewed,
-  Shortlisted, Rejected, and Hired stages.
+- Search candidates, display parsed candidate names, resume experience, and
+  original resume filenames, filter by experience, hide contact details by
+  default, and manage New, Reviewed, Shortlisted, Rejected, and Hired stages.
 - Categorize clients and resumes as IT, Banking, Medical, or Other. Resume
   library uploads are placed in matching private Google Drive industry folders
   and can be filtered or reclassified by category in the ATS.
