@@ -857,7 +857,7 @@ function Dashboard({ authUser, onSignOut }) {
   return (
     <main className="ats-shell">
       <aside className="ats-sidebar">
-        <div className="ats-brand"><img className="brand-mark" src="/sprout-logo.svg" alt="Sprout logo" /><strong>Sprout workspace</strong></div>
+        <div className="ats-brand"><img className="brand-mark" src="/sprout-logo.jpeg" alt="Sprout logo" /><strong>Sprout workspace</strong></div>
         <p className="sidebar-label">WORKSPACE</p>
         <nav aria-label="ATS workspace">
           {navigation.map(([page, label]) => (
