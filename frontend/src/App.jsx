@@ -12,6 +12,7 @@ import {
 } from "firebase/auth";
 import { auth, firebaseConfigured } from "./firebase.js";
 import { saveProfile } from "./api.js";
+import Dashboard from "./Dashboard.jsx";
 
 const authErrorMessages = {
   "auth/email-already-in-use": "An account already exists for this email.",
@@ -247,10 +248,14 @@ function App() {
 
   const phoneSetup = mode === "phone-setup" && pendingRegistration && authUser;
 
+  if (authUser && !phoneSetup) {
+    return <Dashboard authUser={authUser} onSignOut={handleSignOut} />;
+  }
+
   return (
     <main className="page-shell">
       <section className="auth-card" aria-labelledby="page-title">
-        <div className="brand-mark" aria-hidden="true">A</div>
+        <img className="brand-mark" src="/sprout-logo.jpeg" alt="Sprout logo" />
         <p className="eyebrow">ATS PROJECT</p>
         <h1 id="page-title">
           {authUser && !phoneSetup
