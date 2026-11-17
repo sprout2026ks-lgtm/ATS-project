@@ -105,6 +105,186 @@ class AtsApiTests(unittest.TestCase):
         self.database.collection.assert_called_once_with("users")
         reference.set.assert_called_once()
 
+    def test_client_delete_cascades_and_preserves_library_resume(self):
+        user_reference = self.database.collection.return_value.document.return_value
+        clients = Mock()
+        resumes = Mock()
+        client_reference = Mock()
+        user_reference.collection.side_effect = lambda name: {
+            "clients": clients,
+            "resumes": resumes,
+        }[name]
+        clients.document.return_value = client_reference
+        client_snapshot = Mock()
+        client_snapshot.exists = True
+        client_snapshot.to_dict.return_value = {"driveFolderId": "client-folder"}
+        client_reference.get.return_value = client_snapshot
+
+        applicant_collection = Mock()
+        jobs_collection = Mock()
+        client_reference.collection.side_effect = lambda name: {
+            "applicants": applicant_collection,
+            "jobRequirements": jobs_collection,
+        }[name]
+        applicant_reference = Mock()
+        applicant_snapshot = Mock()
+        applicant_snapshot.reference = applicant_reference
+        applicant_snapshot.to_dict.return_value = {
+            "libraryResumeId": "library-resume-1",
+        }
+        applicant_collection.stream.return_value = [applicant_snapshot]
+        job_reference = Mock()
+        job_snapshot = Mock()
+        job_snapshot.id = "job-1"
+        job_snapshot.reference = job_reference
+        jobs_collection.stream.return_value = [job_snapshot]
+
+        resume_reference = Mock()
+        resume_snapshot = Mock()
+        resume_snapshot.id = "library-resume-1"
+        resume_snapshot.reference = resume_reference
+        resume_snapshot.to_dict.return_value = {
+            "sourceClientId": "client-1",
+            "sourceApplicantId": "candidate-1",
+        }
+        resumes.stream.return_value = [resume_snapshot]
+        resumes.document.return_value = resume_reference
+        resume_match = resume_reference.collection.return_value.document.return_value
+        drive = Mock()
+        drive.files.return_value.list.return_value.execute.return_value = {"files": []}
+
+        with patch.dict(
+            os.environ,
+            {"GOOGLE_DRIVE_CREDENTIALS_FILE": "credentials/drive-user.json"},
+        ), patch(
+            "backend.app.auth.verify_id_token", return_value=VERIFIED_CLAIMS
+        ), patch(
+            "backend.app.load_credentials_from_file",
+            return_value=(Mock(), "test-project"),
+        ), patch("backend.app.build", return_value=drive):
+            response = self.client.delete(
+                "/api/clients/client-1",
+                headers=AUTH_HEADERS,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        applicant_reference.delete.assert_called_once()
+        job_reference.delete.assert_called_once()
+        client_reference.delete.assert_called_once()
+        resume_match.delete.assert_called_once()
+        resume_reference.update.assert_called_once()
+        resume_reference.delete.assert_not_called()
+        drive.files.return_value.delete.assert_called_once_with(
+            fileId="client-folder"
+        )
+
+    def test_job_delete_removes_its_saved_assessment_and_match(self):
+        user_reference = self.database.collection.return_value.document.return_value
+        clients = Mock()
+        resumes = Mock()
+        client_reference = Mock()
+        user_reference.collection.side_effect = lambda name: {
+            "clients": clients,
+            "resumes": resumes,
+        }[name]
+        clients.document.return_value = client_reference
+        client_reference.get.return_value.exists = True
+
+        jobs = Mock()
+        applicants = Mock()
+        client_reference.collection.side_effect = lambda name: {
+            "jobRequirements": jobs,
+            "applicants": applicants,
+        }[name]
+        job_reference = Mock()
+        job_reference.get.return_value.exists = True
+        jobs.document.return_value = job_reference
+        applicant_reference = Mock()
+        applicant = Mock()
+        applicant.reference = applicant_reference
+        applicant.to_dict.return_value = {"analyzedJobId": "job-1", "matchScore": 82}
+        applicants.stream.return_value = [applicant]
+
+        resume_reference = Mock()
+        resume = Mock()
+        resume.id = "resume-1"
+        resumes.stream.return_value = [resume]
+        resumes.document.return_value = resume_reference
+        match_reference = resume_reference.collection.return_value.document.return_value
+
+        with patch(
+            "backend.app.auth.verify_id_token", return_value=VERIFIED_CLAIMS
+        ):
+            response = self.client.delete(
+                "/api/clients/client-1/jobs/job-1",
+                headers=AUTH_HEADERS,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        applicant_reference.update.assert_called_once()
+        job_reference.delete.assert_called_once()
+        match_reference.delete.assert_called_once()
+
+    def test_candidate_delete_removes_client_drive_file(self):
+        client_reference = self.user_client_reference()
+        applicant_collection = Mock()
+        applicant_reference = Mock()
+        applicant_snapshot = Mock()
+        applicant_snapshot.exists = True
+        applicant_snapshot.to_dict.return_value = {"driveFileId": "candidate-file"}
+        applicant_reference.get.return_value = applicant_snapshot
+        client_reference.collection.return_value = applicant_collection
+        applicant_collection.document.return_value = applicant_reference
+        drive = Mock()
+
+        with patch.dict(
+            os.environ,
+            {"GOOGLE_DRIVE_CREDENTIALS_FILE": "credentials/drive-user.json"},
+        ), patch(
+            "backend.app.auth.verify_id_token", return_value=VERIFIED_CLAIMS
+        ), patch(
+            "backend.app.load_credentials_from_file",
+            return_value=(Mock(), "test-project"),
+        ), patch("backend.app.build", return_value=drive):
+            response = self.client.delete(
+                "/api/clients/client-1/applicants/candidate-1",
+                headers=AUTH_HEADERS,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        drive.files.return_value.delete.assert_called_once_with(
+            fileId="candidate-file"
+        )
+        applicant_reference.delete.assert_called_once()
+
+    def test_library_resume_delete_removes_file_and_record(self):
+        user_reference = self.database.collection.return_value.document.return_value
+        resume_reference = user_reference.collection.return_value.document.return_value
+        resume_snapshot = Mock()
+        resume_snapshot.exists = True
+        resume_snapshot.to_dict.return_value = {"driveFileId": "library-file"}
+        resume_reference.get.return_value = resume_snapshot
+        resume_reference.collection.return_value.stream.return_value = []
+        drive = Mock()
+
+        with patch.dict(
+            os.environ,
+            {"GOOGLE_DRIVE_CREDENTIALS_FILE": "credentials/drive-user.json"},
+        ), patch(
+            "backend.app.auth.verify_id_token", return_value=VERIFIED_CLAIMS
+        ), patch(
+            "backend.app.load_credentials_from_file",
+            return_value=(Mock(), "test-project"),
+        ), patch("backend.app.build", return_value=drive):
+            response = self.client.delete(
+                "/api/resumes/resume-1",
+                headers=AUTH_HEADERS,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        drive.files.return_value.delete.assert_called_once_with(fileId="library-file")
+        resume_reference.delete.assert_called_once()
+
     def test_applicant_list_shows_resume_names_and_masks_contact_details(self):
         reference = self.user_client_reference()
         client_snapshot = Mock()
@@ -413,6 +593,82 @@ class AtsApiTests(unittest.TestCase):
         self.assertEqual(saved["candidateName"], "Ada Lovelace")
         self.assertEqual(saved["industry"], "Banking")
 
+    def test_candidate_can_be_copied_to_resume_library_only_once(self):
+        client_reference = self.user_client_reference()
+        applicant_reference = Mock()
+        applicant_snapshot = Mock()
+        applicant_snapshot.exists = True
+        applicant_snapshot.to_dict.return_value = {
+            "candidateName": "Aparna M",
+            "email": "aparna@example.com",
+            "contactNumber": "1234567890",
+            "resumeFileName": "Aparna_Profile.pdf",
+            "industry": "Other",
+            "driveFileId": "client-resume-file",
+            "extractedText": "Aparna M Python",
+            "skills": ["python"],
+            "totalExperience": 5,
+            "status": "New",
+        }
+        applicant_reference.get.return_value = applicant_snapshot
+        client_reference.collection.return_value.document.return_value = applicant_reference
+
+        user_reference = self.database.collection.return_value.document.return_value
+        user_reference.get.return_value.to_dict.return_value = {
+            "resumeDriveFolderId": "resume-root",
+        }
+        resume_reference = user_reference.collection.return_value.document.return_value
+        resume_reference.id = "library-resume-1"
+        resume_snapshot = Mock()
+        resume_snapshot.exists = True
+        resume_reference.get.return_value = resume_snapshot
+        drive = Mock()
+        drive.files.return_value.list.return_value.execute.return_value = {"files": []}
+        drive.files.return_value.create.return_value.execute.return_value = {
+            "id": "industry-folder",
+        }
+        drive.files.return_value.copy.return_value.execute.return_value = {
+            "id": "library-copy-file",
+        }
+
+        with patch.dict(
+            os.environ,
+            {"GOOGLE_DRIVE_CREDENTIALS_FILE": "credentials/drive-user.json"},
+        ), patch(
+            "backend.app.auth.verify_id_token", return_value=VERIFIED_CLAIMS
+        ), patch(
+            "backend.app.load_credentials_from_file",
+            return_value=(Mock(), "test-project"),
+        ), patch(
+            "backend.app.build", return_value=drive
+        ):
+            response = self.client.post(
+                "/api/clients/client-1/applicants/candidate-1/library",
+                headers=AUTH_HEADERS,
+            )
+            applicant_snapshot.to_dict.return_value["libraryResumeId"] = "library-resume-1"
+            duplicate_response = self.client.post(
+                "/api/clients/client-1/applicants/candidate-1/library",
+                headers=AUTH_HEADERS,
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["resume"]["id"], "library-resume-1")
+        self.assertFalse(response.json["alreadyExists"])
+        self.assertEqual(duplicate_response.status_code, 200)
+        self.assertTrue(duplicate_response.json["alreadyExists"])
+        self.assertEqual(drive.files.return_value.copy.call_count, 1)
+        self.assertEqual(
+            drive.files.return_value.copy.call_args.kwargs["body"]["parents"],
+            ["industry-folder"],
+        )
+        resume_reference.set.assert_called_once()
+        saved = resume_reference.set.call_args.args[0]
+        self.assertEqual(saved["driveFileId"], "library-copy-file")
+        self.assertEqual(saved["candidateName"], "Aparna M")
+        self.assertEqual(saved["sourceClientId"], "client-1")
+        applicant_reference.update.assert_called_once()
+
     def test_resume_listing_filters_by_industry_and_hides_contact_details(self):
         user_reference = self.database.collection.return_value.document.return_value
         resume = Mock()
@@ -443,6 +699,62 @@ class AtsApiTests(unittest.TestCase):
         self.assertEqual(result["industry"], "Medical")
         self.assertEqual(result["email"], "")
         self.assertEqual(result["contactNumber"], "")
+
+    def test_resume_listing_attaches_saved_match_by_resume_reference(self):
+        user_reference = self.database.collection.return_value.document.return_value
+        clients = Mock()
+        resumes = Mock()
+        client_reference = Mock()
+        job_reference = Mock()
+        user_reference.collection.side_effect = lambda name: {
+            "clients": clients,
+            "resumes": resumes,
+        }[name]
+        clients.document.return_value = client_reference
+        client_reference.get.return_value.exists = True
+        client_reference.collection.return_value.document.return_value = job_reference
+        job_reference.get.return_value.exists = True
+
+        resume = Mock()
+        resume.id = "resume-123456"
+        resume.to_dict.return_value = {
+            "candidateName": "Ada Lovelace",
+            "resumeFileName": "ada-resume.docx",
+            "industry": "IT",
+        }
+        resumes.limit.return_value.stream.return_value = [resume]
+        resume_reference = Mock()
+        resumes.document.return_value = resume_reference
+        match_reference = Mock()
+        match_reference.path = "users/user-1/resumes/resume-123456/matches/match-hash"
+        resume_reference.collection.return_value.document.return_value = match_reference
+        match_snapshot = Mock()
+        match_snapshot.id = "match-hash"
+        match_snapshot.reference = match_reference
+        match_snapshot.exists = True
+        match_snapshot.to_dict.return_value = {
+            "matchScore": 91,
+            "matchRationale": "Strong role fit.",
+            "recommended": True,
+            "clientId": "client-1",
+            "jobId": "job-1",
+        }
+        self.database.get_all.return_value = [match_snapshot]
+
+        with patch(
+            "backend.app.auth.verify_id_token", return_value=VERIFIED_CLAIMS
+        ):
+            response = self.client.get(
+                "/api/resumes?client_id=client-1&job_id=job-1",
+                headers=AUTH_HEADERS,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        result = response.json["resumes"][0]
+        self.assertEqual(result["id"], "resume-123456")
+        self.assertEqual(result["matchScore"], 91)
+        self.assertEqual(result["matchRationale"], "Strong role fit.")
+        self.assertTrue(result["recommended"])
 
     def test_resume_reclassification_moves_drive_file_and_updates_record(self):
         user_reference = self.database.collection.return_value.document.return_value

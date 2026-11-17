@@ -255,7 +255,7 @@ function App() {
   return (
     <main className="page-shell">
       <section className="auth-card" aria-labelledby="page-title">
-        <div className="brand-mark" aria-hidden="true">A</div>
+        <img className="brand-mark" src="/sprout-logo.svg" alt="Sprout logo" />
         <p className="eyebrow">ATS PROJECT</p>
         <h1 id="page-title">
           {authUser && !phoneSetup

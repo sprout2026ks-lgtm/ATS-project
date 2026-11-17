@@ -19,6 +19,16 @@ Firestore, and private Google Drive storage.
 - Categorize clients and resumes as IT, Banking, Medical, or Other. Resume
   library uploads are placed in matching private Google Drive industry folders
   and can be filtered or reclassified by category in the ATS.
+- Client candidates remain separate from the Resume Library unless a recruiter
+  explicitly adds one. Adding a candidate copies its resume into the library's
+  private Drive folder and leaves the client-folder original unchanged.
+- The Talent workspace lists shared library resumes by industry, opens a resume
+  from its candidate name, and suggests the active client's highest-scoring
+  open role after the recruiter explicitly generates any missing AI matches.
+- Clients, job requirements, candidates, and Resume Library resumes can be
+  permanently deleted from their respective lists. Deleting a client removes
+  its jobs, candidates, and client Drive folder but preserves separate library
+  copies; deleting a job also removes its saved match results.
 - Request explainable, job-related matching from OpenRouter. Candidate data is
   not sent until a recruiter starts an analysis. Email addresses, phone
   numbers, and the extracted candidate name are redacted before the request.

@@ -87,6 +87,13 @@ def extract_total_experience(text):
             r"(?:experience|exp\b)",
             re.I,
         ),
+        re.compile(
+            r"(?:years?\s+of\s+(?:(?:professional|relevant|overall|total|work)\s+)?"
+            r"experience|(?:total|overall|professional|relevant|work)\s+exp(?:erience)?)"
+            r"\s*[:\-]?\s*(?P<years>" + years + r")\s*(?:\+|plus)?\s*"
+            r"(?:years?|yrs?)\b" + months,
+            re.I,
+        ),
     )
     experience_matches = []
     for pattern in patterns:
@@ -393,6 +400,35 @@ def create_app():
             )
         return build("drive", "v3", credentials=credentials, cache_discovery=False)
 
+    def delete_drive_file(drive, file_id):
+        try:
+            drive.files().delete(fileId=file_id).execute()
+        except HttpError as error:
+            if error.resp.status != 404:
+                raise
+
+    def delete_drive_folder_tree(drive, folder_id):
+        children = []
+        page_token = None
+        while True:
+            result = drive.files().list(
+                q=f"'{folder_id}' in parents and trashed = false",
+                spaces="drive",
+                fields="nextPageToken,files(id,mimeType)",
+                pageSize=1000,
+                pageToken=page_token,
+            ).execute()
+            children.extend(result.get("files", []))
+            page_token = result.get("nextPageToken")
+            if not page_token:
+                break
+        for child in children:
+            if child.get("mimeType") == "application/vnd.google-apps.folder":
+                delete_drive_folder_tree(drive, child["id"])
+            else:
+                delete_drive_file(drive, child["id"])
+        delete_drive_file(drive, folder_id)
+
     def client_drive_folder(drive, client_ref, client_data):
         folder_id = client_data.get("driveFolderId")
         if folder_id:
@@ -601,6 +637,58 @@ def create_app():
             app.logger.exception("Could not update client")
             return jsonify({"error": "Client service is unavailable"}), 503
 
+    @app.delete("/api/clients/<client_id>")
+    @require_user()
+    def delete_client(client_id):
+        client_ref = client_reference(client_id)
+        try:
+            client_snapshot = client_ref.get()
+            if not client_snapshot.exists:
+                return jsonify({"error": "Client not found"}), 404
+            client_data = client_snapshot.to_dict() or {}
+            applicants = list(client_ref.collection("applicants").stream())
+            jobs = list(client_ref.collection("jobRequirements").stream())
+            resumes = list(user_resumes().stream())
+
+            folder_id = client_data.get("driveFolderId")
+            applicant_file_ids = [
+                (document.to_dict() or {}).get("driveFileId")
+                for document in applicants
+            ]
+            if folder_id or any(applicant_file_ids):
+                drive = drive_service()
+                if folder_id:
+                    delete_drive_folder_tree(drive, folder_id)
+                else:
+                    for file_id in applicant_file_ids:
+                        if file_id:
+                            delete_drive_file(drive, file_id)
+
+            for resume in resumes:
+                for job in jobs:
+                    resume_match_reference(resume.id, client_id, job.id).delete()
+                resume_data = resume.to_dict() or {}
+                if resume_data.get("sourceClientId") == client_id:
+                    resume.reference.update({
+                        "sourceClientId": firestore.DELETE_FIELD,
+                        "sourceApplicantId": firestore.DELETE_FIELD,
+                    })
+            for applicant in applicants:
+                applicant.reference.delete()
+            for job in jobs:
+                job.reference.delete()
+            client_ref.delete()
+        except (
+            DefaultCredentialsError,
+            GoogleAPIError,
+            HttpError,
+            OSError,
+            ValueError,
+        ):
+            app.logger.exception("Could not delete client and its associated data")
+            return jsonify({"error": "Could not delete the client and its associated data."}), 503
+        return jsonify({"deleted": True})
+
     @app.get("/api/clients/<client_id>/jobs")
     @require_user()
     def list_jobs(client_id):
@@ -701,6 +789,38 @@ def create_app():
             app.logger.exception("Could not update job requirement")
             return jsonify({"error": "Job requirement service is unavailable"}), 503
         return jsonify({"job": {"id": job_id, **result}})
+
+    @app.delete("/api/clients/<client_id>/jobs/<job_id>")
+    @require_user()
+    def delete_job(client_id, job_id):
+        try:
+            if is_missing_client(client_id):
+                return jsonify({"error": "Client not found"}), 404
+            reference = job_reference(client_id, job_id)
+            if not reference.get().exists:
+                return jsonify({"error": "Job requirement not found"}), 404
+            applicants = client_reference(client_id).collection("applicants").stream()
+            assessment_fields = (
+                "matchScore",
+                "matchRationale",
+                "matchedSkills",
+                "missingSkills",
+                "recommended",
+                "analyzedJobId",
+                "analyzedAt",
+            )
+            for applicant in applicants:
+                if (applicant.to_dict() or {}).get("analyzedJobId") == job_id:
+                    applicant.reference.update({
+                        field: firestore.DELETE_FIELD for field in assessment_fields
+                    })
+            for resume in user_resumes().stream():
+                resume_match_reference(resume.id, client_id, job_id).delete()
+            reference.delete()
+        except GoogleAPIError:
+            app.logger.exception("Could not delete job requirement and saved matches")
+            return jsonify({"error": "Could not delete the job requirement and its saved matches."}), 503
+        return jsonify({"deleted": True})
 
     @app.post("/api/resumes")
     @require_user()
@@ -816,14 +936,26 @@ def create_app():
                     return jsonify({"error": "Client not found"}), 404
                 if not job_reference(client_id, job_id).get().exists:
                     return jsonify({"error": "Job requirement not found"}), 404
-            resumes = []
-            for document in user_resumes().limit(500).stream():
-                match = None
-                if client_id:
-                    match_snapshot = resume_match_reference(
+            documents = list(user_resumes().limit(500).stream())
+            matches_by_resume = {}
+            if client_id and documents:
+                match_references = {
+                    document.id: resume_match_reference(
                         document.id, client_id, job_id
-                    ).get()
-                    match = match_snapshot.to_dict() if match_snapshot.exists else None
+                    )
+                    for document in documents
+                }
+                resume_ids_by_match_path = {
+                    reference.path: resume_id
+                    for resume_id, reference in match_references.items()
+                }
+                for snapshot in database.get_all(match_references.values()):
+                    resume_id = resume_ids_by_match_path.get(snapshot.reference.path)
+                    if snapshot.exists and resume_id:
+                        matches_by_resume[resume_id] = snapshot.to_dict()
+            resumes = []
+            for document in documents:
+                match = matches_by_resume.get(document.id)
                 data = document.to_dict() or {}
                 if industry_filter and data.get("industry", "Other") != industry_filter:
                     continue
@@ -948,6 +1080,42 @@ def create_app():
             app.logger.exception("Could not move resume to its industry folder")
             return jsonify({"error": "Could not move the resume in Google Drive."}), 503
         return jsonify({"industry": industry})
+
+    @app.delete("/api/resumes/<resume_id>")
+    @require_user()
+    def delete_resume(resume_id):
+        reference = resume_reference(resume_id)
+        try:
+            snapshot = reference.get()
+            if not snapshot.exists:
+                return jsonify({"error": "Resume not found"}), 404
+            resume = snapshot.to_dict() or {}
+            source_client_id = resume.get("sourceClientId")
+            source_applicant_id = resume.get("sourceApplicantId")
+            if source_client_id and source_applicant_id:
+                applicant_ref = applicant_reference(source_client_id, source_applicant_id)
+                applicant = applicant_ref.get()
+                if (applicant.to_dict() or {}).get("libraryResumeId") == resume_id:
+                    applicant_ref.update({
+                        "libraryResumeId": firestore.DELETE_FIELD,
+                    })
+
+            drive_file_id = resume.get("driveFileId")
+            if drive_file_id:
+                delete_drive_file(drive_service(), drive_file_id)
+            for match in reference.collection("matches").stream():
+                match.reference.delete()
+            reference.delete()
+        except (
+            DefaultCredentialsError,
+            GoogleAPIError,
+            HttpError,
+            OSError,
+            ValueError,
+        ):
+            app.logger.exception("Could not delete resume and its saved matches")
+            return jsonify({"error": "Could not delete the resume and its saved matches."}), 503
+        return jsonify({"deleted": True})
 
     @app.patch("/api/resumes/<resume_id>/match")
     @require_user()
@@ -1168,6 +1336,132 @@ def create_app():
         except GoogleAPIError:
             app.logger.exception("Could not update applicant record")
             return jsonify({"error": "Applicant service is unavailable"}), 503
+
+    @app.delete("/api/clients/<client_id>/applicants/<applicant_id>")
+    @require_user()
+    def delete_applicant(client_id, applicant_id):
+        reference = applicant_reference(client_id, applicant_id)
+        try:
+            snapshot = reference.get()
+            if not snapshot.exists:
+                return jsonify({"error": "Candidate not found"}), 404
+            applicant = snapshot.to_dict() or {}
+            resume_id = applicant.get("libraryResumeId")
+            if resume_id:
+                resume_ref = resume_reference(resume_id)
+                resume = resume_ref.get()
+                resume_data = resume.to_dict() or {}
+                if (
+                    resume_data.get("sourceClientId") == client_id
+                    and resume_data.get("sourceApplicantId") == applicant_id
+                ):
+                    resume_ref.update({
+                        "sourceClientId": firestore.DELETE_FIELD,
+                        "sourceApplicantId": firestore.DELETE_FIELD,
+                    })
+
+            drive_file_id = applicant.get("driveFileId")
+            if drive_file_id:
+                delete_drive_file(drive_service(), drive_file_id)
+            reference.delete()
+        except (
+            DefaultCredentialsError,
+            GoogleAPIError,
+            HttpError,
+            OSError,
+            ValueError,
+        ):
+            app.logger.exception("Could not delete candidate and its resume file")
+            return jsonify({"error": "Could not delete the candidate and its resume file."}), 503
+        return jsonify({"deleted": True})
+
+    @app.post("/api/clients/<client_id>/applicants/<applicant_id>/library")
+    @require_user()
+    def add_applicant_to_library(client_id, applicant_id):
+        applicant_ref = applicant_reference(client_id, applicant_id)
+        resume_ref = None
+        copied_file_id = None
+        try:
+            applicant_snapshot = applicant_ref.get()
+            if not applicant_snapshot.exists:
+                return jsonify({"error": "Candidate not found"}), 404
+            applicant = applicant_snapshot.to_dict() or {}
+            existing_resume_id = applicant.get("libraryResumeId")
+            if existing_resume_id:
+                existing_resume = resume_reference(existing_resume_id).get()
+                if existing_resume.exists:
+                    return jsonify({
+                        "resume": {"id": existing_resume_id},
+                        "alreadyExists": True,
+                    })
+                return jsonify({"error": "The linked library resume could not be found."}), 409
+
+            source_file_id = applicant.get("driveFileId")
+            if not source_file_id:
+                return jsonify({"error": "Resume file not found"}), 404
+
+            industry = applicant.get("industry", "Other")
+            if industry not in INDUSTRIES:
+                industry = "Other"
+            filename = Path(applicant.get("resumeFileName", "resume.pdf")).name
+            drive = drive_service()
+            folder_id = industry_drive_folder(
+                drive, resume_drive_folder(drive), industry
+            )
+            copied_file_id = drive.files().copy(
+                fileId=source_file_id,
+                body={"name": filename, "parents": [folder_id]},
+                fields="id",
+            ).execute()["id"]
+
+            resume_ref = user_resumes().document()
+            resume_ref.set({
+                **{
+                    key: applicant[key]
+                    for key in (
+                        "candidateName",
+                        "email",
+                        "contactNumber",
+                        "skills",
+                        "totalExperience",
+                        "extractedText",
+                    )
+                    if key in applicant
+                },
+                "resumeFileName": filename,
+                "industry": industry,
+                "driveFileId": copied_file_id,
+                "status": "New",
+                "sourceClientId": client_id,
+                "sourceApplicantId": applicant_id,
+                "createdAt": firestore.SERVER_TIMESTAMP,
+                "uploadedAt": applicant.get("uploadedAt", firestore.SERVER_TIMESTAMP),
+            })
+            applicant_ref.update({
+                "libraryResumeId": resume_ref.id,
+                "updatedAt": firestore.SERVER_TIMESTAMP,
+            })
+        except (
+            DefaultCredentialsError,
+            GoogleAPIError,
+            HttpError,
+            KeyError,
+            OSError,
+            ValueError,
+        ):
+            app.logger.exception("Could not add candidate resume to the library")
+            if resume_ref is not None:
+                try:
+                    resume_ref.delete()
+                except GoogleAPIError:
+                    app.logger.exception("Could not remove incomplete library resume")
+            if copied_file_id:
+                try:
+                    drive.files().delete(fileId=copied_file_id).execute()
+                except (GoogleAPIError, HttpError):
+                    app.logger.exception("Could not remove copied library resume")
+            return jsonify({"error": "Could not add the resume to the library."}), 503
+        return jsonify({"resume": {"id": resume_ref.id}, "alreadyExists": False}), 201
 
     @app.post("/api/clients/<client_id>/applicants/<applicant_id>/analyze")
     @require_user()

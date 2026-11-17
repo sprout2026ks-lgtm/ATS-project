@@ -12,6 +12,7 @@ const navigation = [
   ["overview", "Overview"],
   ["clients", "Clients"],
   ["jobs", "Job requirements"],
+  ["talent-workspace", "Talent workspace"],
   ["resume-library", "Resume library"],
   ["candidates", "Candidates"],
   ["shortlist", "Shortlist"],
@@ -56,6 +57,8 @@ function Dashboard({ authUser, onSignOut }) {
   const [selectedJobId, setSelectedJobId] = useState("");
   const [candidates, setCandidates] = useState([]);
   const [resumes, setResumes] = useState([]);
+  const [roleSuggestions, setRoleSuggestions] = useState({});
+  const [suggestionProgress, setSuggestionProgress] = useState("");
   const [aiStatus, setAiStatus] = useState(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
@@ -142,6 +145,17 @@ function Dashboard({ authUser, onSignOut }) {
     ].filter(Boolean).join(" ").toLowerCase();
     return haystack.includes(term);
   }), [activePage, industryFilter, resumes, search, statusFilter]);
+  const directoryResumes = useMemo(() => resumes.filter((resume) => {
+    if (industryFilter !== "All" && (resume.industry || "Other") !== industryFilter) return false;
+    const term = search.trim().toLowerCase();
+    if (!term) return true;
+    return [
+      resume.candidateName,
+      resume.resumeFileName,
+      resume.industry,
+      ...(resume.skills || []),
+    ].filter(Boolean).join(" ").toLowerCase().includes(term);
+  }), [industryFilter, resumes, search]);
   const shortlistedCount = candidates.filter(
     (candidate) => candidate.status === "Shortlisted",
   ).length;
@@ -187,6 +201,44 @@ function Dashboard({ authUser, onSignOut }) {
     setResumes(resumeResult.resumes);
   }, [authUser, clientId, includePii, industryFilter, search, selectedJobId]);
   refreshWorkspaceRef.current = refreshWorkspace;
+
+  const fetchRoleSuggestions = useCallback(async () => {
+    if (!clientId || openJobs.length === 0) return {};
+    const results = await Promise.all(openJobs.map(async (job) => ({
+      job,
+      result: await apiJson(
+        authUser,
+        `/api/resumes?client_id=${encodeURIComponent(clientId)}&job_id=${encodeURIComponent(job.id)}`,
+      ),
+    })));
+    const bestByResume = {};
+    for (const { job, result } of results) {
+      for (const resume of result.resumes) {
+        if (typeof resume.matchScore !== "number") continue;
+        const current = bestByResume[resume.id];
+        if (!current || resume.matchScore > current.matchScore) {
+          bestByResume[resume.id] = {
+            matchScore: resume.matchScore,
+            recommended: resume.recommended,
+            jobTitle: job.title,
+          };
+        }
+      }
+    }
+    return bestByResume;
+  }, [authUser, clientId, openJobs]);
+
+  useEffect(() => {
+    if (activePage !== "talent-workspace") return undefined;
+    let active = true;
+    setRoleSuggestions({});
+    fetchRoleSuggestions().then((suggestions) => {
+      if (active) setRoleSuggestions(suggestions);
+    }).catch((loadError) => {
+      if (active) setError(loadError.message);
+    });
+    return () => { active = false; };
+  }, [activePage, fetchRoleSuggestions]);
 
   useEffect(() => {
     let active = true;
@@ -403,6 +455,25 @@ function Dashboard({ authUser, onSignOut }) {
     }, "Client archived.");
   }
 
+  async function deleteClient(client) {
+    if (!window.confirm(`Permanently delete ${client.organizationName}, its jobs and candidates, and its client Drive folder? Separate Resume Library copies will be kept.`)) {
+      return;
+    }
+    await runAction(async () => {
+      await apiJson(authUser, `/api/clients/${encodeURIComponent(client.id)}`, {
+        method: "DELETE",
+      });
+      const remaining = clients.filter((item) => item.id !== client.id);
+      setClients(remaining);
+      if (clientId === client.id) {
+        setClientId(remaining[0]?.id || "");
+        setSelectedJobId("");
+        setJobs([]);
+        setCandidates([]);
+      }
+    }, "Client, jobs, candidates, and client Drive folder deleted. Separate Resume Library copies were kept.");
+  }
+
   async function createJob(event) {
     event.preventDefault();
     await runAction(async () => {
@@ -439,6 +510,29 @@ function Dashboard({ authUser, onSignOut }) {
       );
       await refreshWorkspace();
     }, "Job status updated.");
+  }
+
+  async function deleteJob(job) {
+    if (!window.confirm(`Delete "${job.title}" and its saved match results? Candidate records will be kept.`)) {
+      return;
+    }
+    await runAction(async () => {
+      await apiJson(
+        authUser,
+        `/api/clients/${encodeURIComponent(clientId)}/jobs/${encodeURIComponent(job.id)}`,
+        { method: "DELETE" },
+      );
+      const result = await apiJson(
+        authUser,
+        `/api/clients/${encodeURIComponent(clientId)}/jobs`,
+      );
+      setJobs(result.jobs);
+      if (selectedJobId === job.id) {
+        setSelectedJobId(result.jobs.find((item) => item.status === "Open")?.id || "");
+      } else {
+        await refreshWorkspace();
+      }
+    }, "Job requirement and its saved match results deleted.");
   }
 
   async function uploadSelectedFiles(files, form, uploadBatch) {
@@ -551,6 +645,87 @@ function Dashboard({ authUser, onSignOut }) {
     }
   }
 
+  async function generateRoleSuggestions() {
+    if (!clientId) {
+      setError("Select a client before generating role suggestions.");
+      return;
+    }
+    if (!openJobs.length) {
+      setError("Create or open a job requirement before generating role suggestions.");
+      return;
+    }
+    setError("");
+    setNotice("");
+    setBusy(true);
+    setSuggestionProgress("Checking saved match scores…");
+    let completed = 0;
+    let total = 0;
+    try {
+      const results = await Promise.all(openJobs.map(async (job) => ({
+        job,
+        result: await apiJson(
+          authUser,
+          `/api/resumes?client_id=${encodeURIComponent(clientId)}&job_id=${encodeURIComponent(job.id)}`,
+        ),
+      })));
+      const analyzed = new Set();
+      for (const { job, result } of results) {
+        for (const resume of result.resumes) {
+          if (resume.matchScore != null) analyzed.add(`${resume.id}:${job.id}`);
+        }
+      }
+      const pending = directoryResumes.flatMap((resume) => (
+        openJobs
+          .filter((job) => !analyzed.has(`${resume.id}:${job.id}`))
+          .map((job) => ({ resume, job }))
+      ));
+      total = pending.length;
+      if (!pending.length) {
+        setRoleSuggestions(await fetchRoleSuggestions());
+        setNotice("All displayed resumes already have match scores for the open jobs.");
+        return;
+      }
+      if (!window.confirm(
+        `Generate ${pending.length} AI match${pending.length === 1 ? "" : "es"} for ${directoryResumes.length} displayed resume${directoryResumes.length === 1 ? "" : "s"} across ${openJobs.length} open role${openJobs.length === 1 ? "" : "s"}? Resume text will be sent to the configured AI provider.`,
+      )) {
+        return;
+      }
+      for (const { resume, job } of pending) {
+        setSuggestionProgress(
+          `Analyzing ${completed + 1} of ${pending.length}: ${resume.candidateName} — ${job.title}`,
+        );
+        await apiJson(
+          authUser,
+          `/api/resumes/${encodeURIComponent(resume.id)}/analyze`,
+          {
+            method: "POST",
+            body: JSON.stringify({ clientId, jobId: job.id }),
+          },
+        );
+        completed += 1;
+      }
+      const [suggestions] = await Promise.all([
+        fetchRoleSuggestions(),
+        refreshWorkspace(),
+      ]);
+      setRoleSuggestions(suggestions);
+      setNotice(`Generated role suggestions for ${directoryResumes.length} displayed resumes.`);
+    } catch (analysisError) {
+      const progress = total
+        ? ` ${completed} of ${total} requested matches were saved.`
+        : "";
+      setError(`${analysisError.message}${progress}`);
+      try {
+        setRoleSuggestions(await fetchRoleSuggestions());
+      } catch (refreshError) {
+        setError(`${analysisError.message}${progress} Could not refresh scores: ${refreshError.message}`);
+      }
+    } finally {
+      setSuggestionProgress("");
+      setBusy(false);
+    }
+  }
+
   async function setResumeStatus(resume, status) {
     await runAction(async () => {
       await apiJson(
@@ -588,6 +763,25 @@ function Dashboard({ authUser, onSignOut }) {
     });
   }
 
+  async function viewLibraryResume(resume) {
+    const preview = window.open("about:blank", "_blank");
+    if (!preview) {
+      setError("Allow pop-ups to open the resume.");
+      return;
+    }
+    await runAction(async () => {
+      try {
+        const blob = await downloadLibraryResume(authUser, resume.id);
+        const url = URL.createObjectURL(blob);
+        preview.location.href = url;
+        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      } catch (resumeError) {
+        preview.close();
+        throw resumeError;
+      }
+    });
+  }
+
   async function setCandidateStatus(candidate, status) {
     await runAction(async () => {
       await apiJson(
@@ -597,6 +791,43 @@ function Dashboard({ authUser, onSignOut }) {
       );
       await refreshWorkspace();
     }, `Candidate moved to ${status.toLowerCase()}.`);
+  }
+
+  async function addCandidateToLibrary(candidate) {
+    await runAction(async () => {
+      await apiJson(
+        authUser,
+        `/api/clients/${encodeURIComponent(clientId)}/applicants/${encodeURIComponent(candidate.id)}/library`,
+        { method: "POST" },
+      );
+      await refreshWorkspace();
+    }, `${candidate.candidateName} added to the Resume Library.`);
+  }
+
+  async function deleteCandidate(candidate) {
+    if (!window.confirm(`Delete ${candidate.candidateName} and its client-folder resume? A separate Resume Library copy will be kept.`)) {
+      return;
+    }
+    await runAction(async () => {
+      await apiJson(
+        authUser,
+        `/api/clients/${encodeURIComponent(clientId)}/applicants/${encodeURIComponent(candidate.id)}`,
+        { method: "DELETE" },
+      );
+      await refreshWorkspace();
+    }, `${candidate.candidateName} and its client-folder resume deleted. Any separate library copy was kept.`);
+  }
+
+  async function deleteLibraryResume(resume) {
+    if (!window.confirm(`Permanently delete ${resume.candidateName}'s Resume Library record and file? Client candidate records will be kept.`)) {
+      return;
+    }
+    await runAction(async () => {
+      await apiJson(authUser, `/api/resumes/${encodeURIComponent(resume.id)}`, {
+        method: "DELETE",
+      });
+      await refreshWorkspace();
+    }, `${resume.candidateName}'s Resume Library record and file deleted.`);
   }
 
   async function openResume(candidate) {
@@ -626,7 +857,7 @@ function Dashboard({ authUser, onSignOut }) {
   return (
     <main className="ats-shell">
       <aside className="ats-sidebar">
-        <div className="ats-brand"><span className="brand-mark">A</span><strong>ATS workspace</strong></div>
+        <div className="ats-brand"><img className="brand-mark" src="/sprout-logo.svg" alt="Sprout logo" /><strong>Sprout workspace</strong></div>
         <p className="sidebar-label">WORKSPACE</p>
         <nav aria-label="ATS workspace">
           {navigation.map(([page, label]) => (
@@ -637,7 +868,7 @@ function Dashboard({ authUser, onSignOut }) {
               type="button"
             >
               <span aria-hidden="true">{({
-                overview: "◫", clients: "▣", jobs: "▤", "resume-library": "▧", candidates: "♙",
+                overview: "◫", clients: "▣", jobs: "▤", "talent-workspace": "♙", "resume-library": "▧", candidates: "♙",
                 shortlist: "☆", reports: "▥",
               })[page]}</span>
               {label}
@@ -706,7 +937,10 @@ function Dashboard({ authUser, onSignOut }) {
                       <button type="button" className="client-select" onClick={() => { setClientId(client.id); setSelectedJobId(""); }}>
                         <strong>{client.organizationName}</strong><span>{client.contactPerson || client.companyNature || "Recruitment client"}</span>
                       </button>
-                      <button className="text-button" type="button" onClick={() => archiveClient(client)}>Archive</button>
+                      <div className="action-stack">
+                        <button className="text-button" type="button" onClick={() => archiveClient(client)} disabled={busy}>Archive</button>
+                        <button className="text-button" type="button" onClick={() => deleteClient(client)} disabled={busy}>Delete</button>
+                      </div>
                     </article>
                   ))}
                 </div>
@@ -733,7 +967,7 @@ function Dashboard({ authUser, onSignOut }) {
                 <div className="job-list">
                   {jobs.map((job) => (
                     <article className="job-card" key={job.id}>
-                      <div className="panel-heading"><div><h3>{job.title}</h3><span className={`status-pill ${job.status === "Open" ? "status-open" : ""}`}>{job.status}</span></div><button className="secondary-button" type="button" onClick={() => toggleJob(job)}>{job.status === "Open" ? "Close role" : "Reopen"}</button></div>
+                      <div className="panel-heading"><div><h3>{job.title}</h3><span className={`status-pill ${job.status === "Open" ? "status-open" : ""}`}>{job.status}</span></div><div className="action-stack"><button className="secondary-button" type="button" onClick={() => toggleJob(job)} disabled={busy}>{job.status === "Open" ? "Close role" : "Reopen"}</button><button className="text-button" type="button" onClick={() => deleteJob(job)} disabled={busy}>Delete requirement</button></div></div>
                       <p className="muted">{job.description || "No additional description."}</p>
                       <div className="tag-row">{(job.requiredSkills || []).map((skill) => <span className="skill-tag" key={skill}>{skill}</span>)}</div>
                       <small className="muted">{job.location ? `Location: ${job.location}` : "Location not specified"}</small>
@@ -753,6 +987,85 @@ function Dashboard({ authUser, onSignOut }) {
               <label>Minimum experience (years)<input type="number" min="0" max="60" step="0.5" value={jobForm.minimumExperience} onChange={(event) => setJobForm({ ...jobForm, minimumExperience: event.target.value })} disabled={!clientId} /></label>
               <button className="primary-button" type="submit" disabled={busy || !clientId}>Create requirement</button>
             </form>
+          </div>
+        )}
+
+        {activePage === "talent-workspace" && (
+          <div className="dashboard-content">
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">SHARED RESUME LIBRARY</p>
+                  <h2>Candidate directory</h2>
+                  <p className="muted">Click a candidate name to open the resume. Role suggestions use the highest score across the active client’s open roles.</p>
+                </div>
+                <span className="soft-badge">{directoryResumes.length} candidates</span>
+              </div>
+              <div className="candidate-controls">
+                <label className="compact-select">
+                  <span className="sr-only">Filter candidates by industry</span>
+                  <select value={industryFilter} onChange={(event) => setIndustryFilter(event.target.value)}>
+                    <option value="All">All industries</option>
+                    {industries.map((industry) => <option key={industry}>{industry}</option>)}
+                  </select>
+                </label>
+                <label className="search-field">
+                  <span className="sr-only">Search candidates</span>
+                  <input
+                    type="search"
+                    placeholder="Search candidates, skills, filenames…"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                  />
+                </label>
+                <button
+                  className="primary-button compact-button"
+                  type="button"
+                  onClick={generateRoleSuggestions}
+                  disabled={busy || !clientId || !openJobs.length || !directoryResumes.length || !aiStatus?.enabled}
+                >
+                  {suggestionProgress ? "Generating suggestions…" : "Generate role suggestions"}
+                </button>
+              </div>
+              {suggestionProgress && <p className="muted" role="status">{suggestionProgress}</p>}
+              {!clientId && <p className="inline-notice">Select a client to compare candidates with its open roles.</p>}
+              {clientId && !openJobs.length && <p className="inline-notice">Create or open a job requirement to generate role suggestions.</p>}
+              {aiStatus && !aiStatus.enabled && <p className="inline-notice">AI matching is disabled until OPENROUTER_API_KEY and OPENROUTER_MODEL are set in the backend environment.</p>}
+              {directoryResumes.length === 0 ? <p className="empty-state">No candidates found. Add resumes to the Resume Library to build this directory.</p> : (
+                <div className="table-scroll">
+                  <table className="candidate-table">
+                    <thead>
+                      <tr><th>Candidate</th><th>Industry</th><th>Best match</th><th>Suggested role</th></tr>
+                    </thead>
+                    <tbody>
+                      {directoryResumes.map((resume) => {
+                        const suggestion = roleSuggestions[resume.id];
+                        return (
+                          <tr key={resume.id}>
+                            <td>
+                              <button
+                                className="table-link"
+                                type="button"
+                                onClick={() => viewLibraryResume(resume)}
+                                disabled={busy}
+                              >
+                                {resume.candidateName}
+                              </button>
+                            </td>
+                            <td>{resume.industry || "Other"}</td>
+                            <td>{suggestion ? <strong className="score-value">{suggestion.matchScore}%</strong> : <span className="muted">Not analyzed</span>}</td>
+                            <td>{suggestion ? suggestion.jobTitle : <span className="muted">Generate suggestions</span>}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {Object.values(roleSuggestions).some((suggestion) => suggestion.recommended) && (
+                <p className="muted">Recommendations are advisory; verify every resume and make hiring decisions with human review.</p>
+              )}
+            </section>
           </div>
         )}
 
@@ -804,7 +1117,7 @@ function Dashboard({ authUser, onSignOut }) {
                           <td><div className="tag-row">{(resume.skills || []).slice(0, 5).map((skill) => <span className="skill-tag" key={skill}>{skill}</span>)}</div>{resume.totalExperience > 0 && <small>{resume.totalExperience} yrs experience</small>}</td>
                           <td>{resume.matchScore == null ? <span className="muted">Not analyzed</span> : <strong className="score-value">{resume.matchScore}%</strong>}{resume.matchRationale && <small className="match-rationale" title={resume.matchRationale}>{resume.matchRationale}</small>}</td>
                           <td>{resume.matchScore == null ? <span className="muted">—</span> : <select className="status-select" value={resume.status || "New"} onChange={(event) => setResumeStatus(resume, event.target.value)} aria-label={`Set shortlist status for ${resume.candidateName}`} disabled={busy}>{statuses.map((status) => <option key={status}>{status}</option>)}</select>}</td>
-                          <td><div className="action-stack"><button className="table-link" type="button" disabled={!aiStatus?.enabled || matchingResumeId === resume.id || !clientId || !selectedJobId} onClick={() => analyzeResume(resume)}>{matchingResumeId === resume.id ? "Analyzing…" : "Analyze match"}</button></div></td>
+                          <td><div className="action-stack"><button className="table-link" type="button" disabled={!aiStatus?.enabled || matchingResumeId === resume.id || !clientId || !selectedJobId || busy} onClick={() => analyzeResume(resume)}>{matchingResumeId === resume.id ? "Analyzing…" : "Analyze match"}</button>{activePage === "resume-library" && <button className="table-link" type="button" onClick={() => deleteLibraryResume(resume)} disabled={busy}>Delete resume</button>}</div></td>
                         </tr>
                       ))}
                     </tbody>
@@ -857,7 +1170,7 @@ function Dashboard({ authUser, onSignOut }) {
                           <td>{typeof candidate.totalExperience === "number" && Number.isFinite(candidate.totalExperience) ? `${candidate.totalExperience} years` : <span className="muted">Not detected</span>}</td>
                           <td>{candidate.matchScore == null ? <span className="muted">Not analyzed</span> : <strong className="score-value">{candidate.matchScore}%</strong>}{candidate.matchRationale && <small className="match-rationale" title={candidate.matchRationale}>{candidate.matchRationale}</small>}</td>
                           <td><select className="status-select" value={candidate.status} onChange={(event) => setCandidateStatus(candidate, event.target.value)} aria-label={`Set status for ${candidate.candidateName}`}>{statuses.map((status) => <option key={status}>{status}</option>)}</select></td>
-                          <td><div className="action-stack">{activePage === "candidates" && <button className="table-link" type="button" disabled={!aiStatus?.enabled || analyzingId === candidate.id || !selectedJobId} onClick={() => analyzeCandidate(candidate)}>{analyzingId === candidate.id ? "Analyzing…" : "Analyze match"}</button>}{candidate.status !== "Shortlisted" && <button className="table-link" type="button" onClick={() => setCandidateStatus(candidate, "Shortlisted")}>Shortlist</button>}</div></td>
+                          <td><div className="action-stack">{activePage === "candidates" && <><button className="table-link" type="button" disabled={Boolean(candidate.libraryResumeId) || busy} onClick={() => addCandidateToLibrary(candidate)}>{candidate.libraryResumeId ? "In Resume Library" : "Add to Resume Library"}</button><button className="table-link" type="button" disabled={!aiStatus?.enabled || analyzingId === candidate.id || !selectedJobId || busy} onClick={() => analyzeCandidate(candidate)}>{analyzingId === candidate.id ? "Analyzing…" : "Analyze match"}</button></>}{candidate.status !== "Shortlisted" && <button className="table-link" type="button" onClick={() => setCandidateStatus(candidate, "Shortlisted")} disabled={busy}>Shortlist</button>}<button className="table-link" type="button" onClick={() => deleteCandidate(candidate)} disabled={busy}>Delete candidate</button></div></td>
                         </tr>
                       ))}
                     </tbody>

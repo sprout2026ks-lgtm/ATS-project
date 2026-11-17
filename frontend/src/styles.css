@@ -1,6 +1,12 @@
 @import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap");
 
 :root {
+  --brand-color: #ff6a00;
+  --brand-hover: #e85f00;
+  --brand-ink: #ad4300;
+  --brand-soft: #fff1e7;
+  --brand-soft-border: #ffd1b3;
+  --brand-focus: rgba(255, 106, 0, 0.14);
   font-family: "DM Sans", sans-serif;
   color: #17233c;
   background: #f5f7fb;
@@ -22,8 +28,8 @@ body {
   min-height: 100vh;
   margin: 0;
   background:
-    radial-gradient(ellipse at 10% 12%, rgba(116, 154, 255, 0.1), transparent 34%),
-    radial-gradient(ellipse at 94% 88%, rgba(81, 194, 169, 0.1), transparent 33%),
+    radial-gradient(ellipse at 10% 12%, rgba(255, 106, 0, 0.08), transparent 34%),
+    radial-gradient(ellipse at 94% 88%, rgba(255, 190, 130, 0.12), transparent 33%),
     #f5f7fb;
 }
 
@@ -51,21 +57,22 @@ input {
 }
 
 .brand-mark {
-  display: grid;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  border-radius: 13px;
-  background: #315ee8;
-  color: #fff;
-  font-family: "Manrope", sans-serif;
-  font-size: 23px;
-  font-weight: 800;
+  display: block;
+  width: min(100%, 250px);
+  max-width: 250px;
+  height: auto;
+  border-radius: 9px;
+  object-fit: contain;
 }
+
+.auth-card .brand-mark {
+  width: min(100%, 260px);
+}
+
 
 .eyebrow {
   margin: 25px 0 8px;
-  color: #5571b6;
+  color: var(--brand-ink);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.14em;
@@ -118,8 +125,8 @@ h1 {
 }
 
 .auth-form input:focus {
-  border-color: #5276e9;
-  box-shadow: 0 0 0 3px rgba(49, 94, 232, 0.12);
+  border-color: var(--brand-color);
+  box-shadow: 0 0 0 3px var(--brand-focus);
 }
 
 .primary-button {
@@ -127,8 +134,8 @@ h1 {
   margin-top: 10px;
   border: 0;
   border-radius: 9px;
-  background: #315ee8;
-  color: #fff;
+  background: var(--brand-color);
+  color: #17233c;
   cursor: pointer;
   font-size: 14px;
   font-weight: 700;
@@ -137,7 +144,7 @@ h1 {
 
 .primary-button:hover:not(:disabled) {
   transform: translateY(-1px);
-  background: #234ed2;
+  background: var(--brand-hover);
 }
 
 .primary-button:disabled {
@@ -192,7 +199,7 @@ h1 {
   padding: 5px 0;
   border: 0;
   background: transparent;
-  color: #315ee8;
+  color: var(--brand-ink);
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
@@ -200,7 +207,7 @@ h1 {
 }
 
 .text-button:hover {
-  color: #234ed2;
+  color: #8c3700;
   text-decoration: underline;
 }
 
@@ -284,11 +291,10 @@ footer {
 }
 
 .ats-brand .brand-mark {
-  flex: 0 0 38px;
-  width: 38px;
-  height: 38px;
-  border-radius: 11px;
-  font-size: 20px;
+  flex: 0 0 110px;
+  width: 110px;
+  height: auto;
+  border-radius: 6px;
 }
 
 .sidebar-label {
@@ -329,19 +335,19 @@ footer {
 
 .nav-item:hover,
 .nav-item.active {
-  background: #eef2ff;
-  color: #315ee8;
+  background: var(--brand-soft);
+  color: var(--brand-ink);
 }
 
 .nav-item.active > span:first-child {
-  color: #315ee8;
+  color: var(--brand-ink);
 }
 
 .nav-count {
   margin-left: auto;
   border-radius: 20px;
-  background: #dce5ff;
-  color: #315ee8;
+  background: #ffd9bf;
+  color: var(--brand-ink);
   font-size: 11px;
   padding: 2px 7px;
 }
@@ -362,8 +368,8 @@ footer {
   flex: 0 0 34px;
   place-items: center;
   border-radius: 50%;
-  background: #e6ecff;
-  color: #315ee8;
+  background: var(--brand-soft);
+  color: var(--brand-ink);
   font-size: 13px;
   font-weight: 700;
 }
@@ -401,7 +407,7 @@ footer {
 
 .icon-button:hover {
   background: #f1f3f8;
-  color: #315ee8;
+  color: var(--brand-ink);
 }
 
 .ats-main {
@@ -509,7 +515,7 @@ footer {
   gap: 24px;
   padding: 27px;
   background:
-    radial-gradient(ellipse at 87% 3%, rgba(116, 154, 255, 0.17), transparent 35%),
+    radial-gradient(ellipse at 87% 3%, rgba(255, 106, 0, 0.15), transparent 35%),
     #fff;
 }
 
@@ -549,8 +555,8 @@ footer {
 }
 
 .secondary-button:hover {
-  border-color: #b7c5f8;
-  color: #315ee8;
+  border-color: #ffb27b;
+  color: var(--brand-ink);
 }
 
 .stat-grid {
@@ -657,8 +663,8 @@ footer {
 .form-panel input:focus,
 .form-panel textarea:focus,
 .search-field input:focus {
-  border-color: #5276e9;
-  box-shadow: 0 0 0 3px rgba(49, 94, 232, 0.1);
+  border-color: var(--brand-color);
+  box-shadow: 0 0 0 3px var(--brand-focus);
 }
 
 .form-panel textarea {
@@ -693,8 +699,8 @@ footer {
 }
 
 .client-row.selected {
-  border-color: #c9d4ff;
-  background: #f8f9ff;
+  border-color: var(--brand-soft-border);
+  background: #fff8f2;
 }
 
 .client-select {
@@ -838,7 +844,7 @@ footer {
 }
 
 .privacy-toggle input {
-  accent-color: #315ee8;
+  accent-color: var(--brand-color);
 }
 
 .table-scroll {
@@ -896,7 +902,7 @@ footer {
 }
 
 .score-value {
-  color: #315ee8 !important;
+  color: var(--brand-ink) !important;
   font-size: 13px !important;
 }
 
@@ -910,7 +916,7 @@ footer {
   display: block;
   border: 0;
   background: transparent;
-  color: #315ee8;
+  color: var(--brand-ink);
   cursor: pointer;
   font-size: 10px;
   font-weight: 600;
